@@ -1,0 +1,27 @@
+# Core dependencies for KitchenMind
+
+# FastAPI and Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Database
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+alembic==1.12.1
+
+# Data Validation
+pydantic==2.5.0
+
+# Environment Configuration
+python-dotenv==1.0.0
+
+# Optional: For LLM integration (if using transformers)
+transformers==4.35.0
+torch==2.1.1
+
+# Development dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+black>=23.0.0
+mypy>=1.0.0
+flake8>=6.0.0
