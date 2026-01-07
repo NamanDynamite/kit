@@ -80,20 +80,66 @@ def test_create_role() -> Dict[str, Any]:
         print_error(f"Error: {e}")
         return None
 
-def test_create_user() -> Dict[str, Any]:
+def test_create_admin_role() -> Dict[str, Any]:
+    """Test admin role creation."""
+    print_test("Create Admin Role")
+    try:
+        role_data = {
+            "role_id": "admin",
+            "role_name": "ADMIN",
+            "description": "Admin role"
+        }
+        response = requests.post(f"{BASE_URL}/roles", json=role_data)
+        if response.status_code in (200, 201):
+            role = response.json()
+            print_success(f"Admin role created: {role['role_name']}")
+            return role
+        elif response.status_code == 409:
+            # Fetch existing role if duplicate
+            get_resp = requests.get(f"{BASE_URL}/roles/{role_data['role_id']}")
+            if get_resp.status_code == 200:
+                role = get_resp.json()
+                print_success(f"Admin role exists: {role['role_name']}")
+                return role
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+        else:
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+    except Exception as e:
+        print_error(f"Error: {e}")
+        return None
+
+def test_create_user(role_id: str = "trainer") -> Dict[str, Any]:
     """Test user creation."""
     print_test("Create User")
     try:
-        user_data = {
-            "name": "Test Trainer",
-            "email": "test_trainer@example.com",
-            "login_identifier": "test_trainer",
-            "password_hash": "hashedpassword",
-            "auth_type": "password",
-            "role_id": "trainer",
-            "dietary_preference": "VEG"
-        }
+        if role_id == "admin":
+            user_data = {
+                "name": "Test Admin",
+                "email": "test_admin@example.com",
+                "login_identifier": "test_admin",
+                "password_hash": "hashedpassword",
+                "auth_type": "password",
+                "role_id": "admin",
+                "dietary_preference": "VEG"
+            }
+        else:
+            user_data = {
+                "name": "Test Trainer",
+                "email": "test_trainer@example.com",
+                "login_identifier": "test_trainer",
+                "password_hash": "hashedpassword",
+                "auth_type": "password",
+                "role_id": role_id,
+                "dietary_preference": "VEG"
+            }
+        print(f"[DEBUG] Creating user with data: {user_data}")
         response = requests.post(f"{BASE_URL}/user", json=user_data)
+        print(f"[DEBUG] Response status: {response.status_code}")
+        print(f"[DEBUG] Response text: {response.text}")
         if response.status_code in (200, 201):
             user = response.json()
             print_success(f"User created: {user['name']}")
@@ -116,30 +162,90 @@ def test_create_user() -> Dict[str, Any]:
         print_error(f"Error: {e}")
         return None
 def test_create_admin_profile(user: Dict[str, Any]) -> Dict[str, Any]:
-    print("[SKIPPED] /admin_profiles endpoint does not exist.")
-    return None
+    """Test admin profile creation."""
+    print_test("Create Admin Profile")
+    try:
+        profile_data = {
+            "name": user.get("name", "Test Admin"),
+            "email": user.get("email", "test_admin@example.com")
+        }
+        response = requests.post(f"{BASE_URL}/admin_profiles", json=profile_data)
+        if response.status_code in (200, 201):
+            admin = response.json()
+            print_success(f"Admin profile created: {admin['name']}")
+            return admin
+        elif response.status_code == 409:
+            # Fetch existing admin by searching for user with this email, then get admin profile
+            email = user.get("email")
+            user_resp = requests.get(f"{BASE_URL}/user/email/{email}")
+            if user_resp.status_code == 200:
+                user_obj = user_resp.json()
+                admin_id = user_obj.get("user_id") or user_obj.get("id")
+                get_resp = requests.get(f"{BASE_URL}/admin_profiles/{admin_id}")
+                if get_resp.status_code == 200:
+                    admin = get_resp.json()
+                    print_success(f"Admin profile exists: {admin['name']}")
+                    return admin
+                print_error(f"Status code: {get_resp.status_code}")
+                print_error(f"Response: {get_resp.text}")
+                return None
+            print_error(f"Status code: {user_resp.status_code}")
+            print_error(f"Response: {user_resp.text}")
+            return None
+        else:
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+    except Exception as e:
+        print_error(f"Error: {e}")
+        return None
 def test_create_session(user: Dict[str, Any]) -> Dict[str, Any]:
-    print("[SKIPPED] /sessions endpoint does not exist.")
-    return None
+    """Test session creation."""
+    print_test("Create Session")
+    if not user:
+        print_error("No user provided")
+        return None
+    try:
+        session_data = {
+            "user_id": user.get("user_id") or user.get("id")
+        }
+        response = requests.post(f"{BASE_URL}/session", json=session_data)
+        if response.status_code in (200, 201):
+            session = response.json()
+            print_success(f"Session created: {session['session_id']}")
+            return session
+        else:
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+    except Exception as e:
+        print_error(f"Error: {e}")
+        return None
 def test_create_admin_action(admin: Dict[str, Any]) -> Dict[str, Any]:
     """Test admin action log creation."""
-    print_test("Create Admin Action Log")
+    print_test("Update Admin Action Fields (User Table)")
     if not admin:
         print_error("No admin provided")
         return None
     try:
-        action_data = {
-            "admin_id": admin["admin_id"],
-            "action_type": "MANUAL_ADJUSTMENT",
-            "target_type": "USER",
-            "target_id": admin["user_id"],
-            "description": "Manual adjustment for test"
+        from datetime import datetime
+        # Patch the admin user with new admin action fields
+        user_id = admin.get("admin_id") or admin.get("user_id") or admin.get("id")
+        if not user_id:
+            print_error("No user_id found in admin object")
+            return None
+        patch_data = {
+            "admin_action_type": "MANUAL_ADJUSTMENT",
+            "admin_action_target_type": "test_target_type",
+            "admin_action_target_id": "test_target_id",
+            "admin_action_description": "Manual adjustment for test",
+            "admin_action_created_at": datetime.utcnow().isoformat()
         }
-        response = requests.post(f"{BASE_URL}/admin_actions", json=action_data)
-        if response.status_code in (200, 201):
-            action = response.json()
-            print_success(f"Admin action logged: {action['action_id']}")
-            return action
+        response = requests.patch(f"{BASE_URL}/user/{user_id}", json=patch_data)
+        if response.status_code in (200, 201, 200):
+            updated = response.json()
+            print_success(f"Admin action fields updated for user: {user_id}")
+            return updated
         else:
             print_error(f"Status code: {response.status_code}")
             print_error(f"Response: {response.text}")
@@ -361,25 +467,27 @@ def test_ai_review_recipe(recipe: Dict[str, Any]) -> bool:
 def run_all_tests():
     """Run all tests for all endpoints."""
     print(f"\n{BLUE}{'='*50}")
-    print("KitchenMind API Test Suite (Full Endpoints)")
-    print(f"{'='*50}{RESET}")
+    print(f"KitchenMind API Test Suite (Full Endpoints)")
+    print(f"{'='*50}{RESET}\n")
+    results = {}
 
-    results = {
-        "health_check": test_health_check(),
-    }
+    # Health check
+    results["health_check"] = test_health_check()
 
-    # Create role
+    # Create roles
     role = test_create_role()
     print(f"[DEBUG TEST] role object after creation: {role}")
     results["create_role"] = role is not None
 
-    # Create user
+    # Create admin role before admin profile
+    admin_role = test_create_admin_role()
+    print(f"[DEBUG TEST] admin_role object after creation: {admin_role}")
+    results["create_admin_role"] = admin_role is not None
 
-    # Create user and always fetch from DB to ensure commit
-    user = test_create_user()
+    # Create admin user and always fetch from DB to ensure commit
+    user = test_create_user(role_id="admin")
     print(f"[DEBUG TEST] user object after creation: {user}")
     if user and 'email' in user:
-        # Always fetch user by email to ensure DB commit/visibility
         get_resp = requests.get(f"{BASE_URL}/user/email/{user['email']}")
         if get_resp.status_code == 200:
             user = get_resp.json()
@@ -388,6 +496,10 @@ def run_all_tests():
         user['id'] = user['user_id']
         print(f"[DEBUG TEST] user object patched with id: {user}")
     results["create_user"] = user is not None
+
+    # Patch user to have role_id 'admin' for admin profile creation
+    if user:
+        user['role_id'] = 'admin'
 
     # Create admin profile
     admin_profile = test_create_admin_profile(user)
@@ -439,13 +551,13 @@ def run_all_tests():
             print_error(f"Exception in approve_recipe: {e}")
             return False
 
-    # For test, use the user as validator (must have validator/admin role in DB)
-    if recipe and user:
-        # Try validator endpoint first, fallback to AI review if forbidden
-        approved = approve_recipe(recipe, user["id"])
-        if not approved:
-            print("[DEBUG TEST] Falling back to AI review endpoint for approval...")
-            approved = test_ai_review_recipe(recipe)
+    # Create validator role before creating validator user
+        # Validator role removed. No test_create_validator_role needed.
+
+    # Approve recipe so synthesis will succeed
+    # If validator approval is only via OpenAI API, always use test_ai_review_recipe.
+    if recipe:
+        approved = test_ai_review_recipe(recipe)
         results["approve_recipe"] = approved
     else:
         results["approve_recipe"] = False

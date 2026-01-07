@@ -1,3 +1,141 @@
+from sqlalchemy.orm import Session
+# PATCH endpoint to update user fields (including admin_action_* fields)
+from fastapi import Body, Depends
+from typing import Any
+from pydantic import BaseModel
+from fastapi import FastAPI
+
+app = FastAPI()
+
+class UserUpdate(BaseModel):
+    name: str = None
+    email: str = None
+    login_identifier: str = None
+    password_hash: str = None
+    auth_type: str = None
+    role_id: str = None
+    dietary_preference: str = None
+    rating_score: float = None
+    credit: float = None
+    last_login_at: str = None
+    is_super_admin: bool = None
+    created_by: str = None
+    admin_action_type: str = None
+    admin_action_target_type: str = None
+    admin_action_target_id: str = None
+    admin_action_description: str = None
+    admin_action_created_at: str = None
+
+# Import get_db and related models early so they are available for endpoints
+from Module.database import get_db, init_db, Recipe, Role, User
+from Module.database import DietaryPreferenceEnum
+
+# UserResponse must be defined before any endpoint that uses it
+class UserResponse(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    login_identifier: str
+    role_id: str
+    dietary_preference: str
+    rating_score: float
+    credit: float
+    created_at: str = None
+    last_login_at: str = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    login_identifier: Optional[str] = None
+    password_hash: Optional[str] = None
+    auth_type: Optional[str] = None
+    role_id: Optional[str] = None
+    dietary_preference: Optional[str] = None
+    rating_score: Optional[float] = None
+    credit: Optional[float] = None
+    last_login_at: Optional[str] = None
+    is_super_admin: Optional[bool] = None
+    created_by: Optional[str] = None
+    admin_action_type: Optional[str] = None
+    admin_action_target_type: Optional[str] = None
+    admin_action_target_id: Optional[str] = None
+    admin_action_description: Optional[str] = None
+    admin_action_created_at: Optional[str] = None
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    login_identifier: Optional[str] = None
+    password_hash: Optional[str] = None
+    auth_type: Optional[str] = None
+    role_id: Optional[str] = None
+    dietary_preference: Optional[str] = None
+    rating_score: Optional[float] = None
+    credit: Optional[float] = None
+    last_login_at: Optional[str] = None
+    is_super_admin: Optional[bool] = None
+    created_by: Optional[str] = None
+    admin_action_type: Optional[str] = None
+    admin_action_target_type: Optional[str] = None
+    admin_action_target_id: Optional[str] = None
+    admin_action_description: Optional[str] = None
+    admin_action_created_at: Optional[str] = None
+
+# UserResponse must be defined before any endpoint that uses it
+class UserResponse(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    login_identifier: str
+    role_id: str
+    dietary_preference: str
+    rating_score: float
+    credit: float
+    created_at: str = None
+    last_login_at: str = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    login_identifier: Optional[str] = None
+    password_hash: Optional[str] = None
+    auth_type: Optional[str] = None
+    role_id: Optional[str] = None
+    dietary_preference: Optional[str] = None
+    rating_score: Optional[float] = None
+    credit: Optional[float] = None
+    last_login_at: Optional[str] = None
+    is_super_admin: Optional[bool] = None
+    created_by: Optional[str] = None
+    admin_action_type: Optional[str] = None
+    admin_action_target_type: Optional[str] = None
+    admin_action_target_id: Optional[str] = None
+    admin_action_description: Optional[str] = None
+    admin_action_created_at: Optional[str] = None
+
+@app.patch("/user/{user_id}", response_model=UserResponse)
+def update_user(user_id: str, user_update: UserUpdate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    update_data = user_update.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        if field == "dietary_preference" and value is not None:
+            try:
+                value = DietaryPreferenceEnum[value] if value in DietaryPreferenceEnum.__members__ else DietaryPreferenceEnum(value)
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"Invalid dietary_preference: {value}")
+        setattr(user, field, value)
+    db.commit()
+    db.refresh(user)
+    return UserResponse(
+        user_id=user.user_id,
+        name=user.name,
+        email=user.email,
+        login_identifier=user.login_identifier,
+        role_id=user.role_id,
+        dietary_preference=user.dietary_preference.value if user.dietary_preference else None,
+        rating_score=user.rating_score,
+        credit=user.credit,
+        created_at=str(user.created_at) if user.created_at else None,
+        last_login_at=str(user.last_login_at) if user.last_login_at else None
+    )
 """
 FastAPI application for KitchenMind recipe synthesis system.
 Provides REST API for recipe management, synthesis, and event planning.
@@ -13,7 +151,6 @@ from pydantic import BaseModel
 import uuid
 from datetime import datetime
 
-app = FastAPI()
 
 from Module.database import get_db, init_db, Recipe, Role, User
 from Module.database import DietaryPreferenceEnum
@@ -26,7 +163,7 @@ from Module.scoring import ScoringEngine
 # If you need to implement admin profile creation, please define it inside an endpoint or function.)
 
 # Admin Profile and Action Log Endpoints
-from Module.models import AdminProfile, AdminActionLog
+from Module.models import AdminProfile
 
 
 
@@ -40,17 +177,6 @@ class AdminProfileResponse(BaseModel):
     email: str
     created_at: str
 
-class AdminActionLogCreate(BaseModel):
-    admin_id: str
-    action_type: str
-    details: str
-
-class AdminActionLogResponse(BaseModel):
-    action_id: str
-    admin_id: str
-    action_type: str
-    timestamp: str
-    details: str
 
 
 
@@ -111,45 +237,6 @@ def get_admin_profile(admin_id: str, db: OrmSession = Depends(get_db)):
 
 from sqlalchemy.orm import Session as OrmSession
 
-@app.post("/admin_actions", response_model=AdminActionLogResponse)
-def create_admin_action(action: AdminActionLogCreate, db: OrmSession = Depends(get_db)):
-    import uuid
-    from datetime import datetime
-    from Module.database import AdminActionLog
-    action_id = str(uuid.uuid4())
-    timestamp = datetime.utcnow()
-    log = AdminActionLog(
-        action_id=action_id,
-        admin_id=action.admin_id,
-        action_type=action.action_type,
-        timestamp=timestamp,
-        details=action.details
-    )
-    db.add(log)
-    db.commit()
-    db.refresh(log)
-    return AdminActionLogResponse(
-        action_id=log.action_id,
-        admin_id=log.admin_id,
-        action_type=log.action_type,
-        timestamp=str(log.timestamp),
-        details=log.details
-    )
-
-
-@app.get("/admin_actions/{action_id}", response_model=AdminActionLogResponse)
-def get_admin_action(action_id: str, db: OrmSession = Depends(get_db)):
-    from Module.database import AdminActionLog
-    log = db.query(AdminActionLog).filter(AdminActionLog.action_id == action_id).first()
-    if not log:
-        raise HTTPException(status_code=404, detail="Admin action not found")
-    return AdminActionLogResponse(
-        action_id=log.action_id,
-        admin_id=log.admin_id,
-        action_type=log.action_type,
-        timestamp=str(log.timestamp),
-        details=log.details
-    )
 
 class SessionCreate(BaseModel):
     user_id: str
@@ -603,11 +690,32 @@ def synthesize_recipe(
             request.reorder
         )
         print(f"[DEBUG] Synthesis result: {result}")
+        print(f"[DEBUG] Synthesis result type: {type(result)}; dir: {dir(result)}")
+        print(f"[DEBUG] Synthesis result class: {result.__class__.__module__}.{result.__class__.__name__}")
+        # Ensure result is a dataclass with 'ingredients' attribute
+        if not hasattr(result, 'ingredients') or not isinstance(result.ingredients, (list, tuple)):
+            print("[DEBUG] result missing 'ingredients' or not a list/tuple, attempting conversion to dataclass")
+            from Module.controller import ensure_recipe_dataclass
+            try:
+                result = ensure_recipe_dataclass(result)
+                print(f"[DEBUG] After ensure_recipe_dataclass: type={type(result)}, dir={dir(result)}")
+            except Exception as conv_e:
+                print(f"[ERROR] ensure_recipe_dataclass failed: {conv_e}")
+                raise HTTPException(status_code=500, detail=f"Failed to convert result to Recipe dataclass: {conv_e}")
+        if not hasattr(result, 'ingredients'):
+            print(f"[ERROR] Even after conversion, result has no 'ingredients'. type={type(result)}, dir={dir(result)}")
+            raise HTTPException(status_code=500, detail="Synthesized recipe has no 'ingredients' attribute after conversion.")
         postgres_repo = PostgresRecipeRepository(db)
         print(f"[DEBUG] PostgresRecipeRepository created: {postgres_repo}")
+        try:
+            ings = result.ingredients
+        except Exception as attr_e:
+            print(f"[ERROR] Exception accessing result.ingredients: {attr_e}")
+            print(f"[ERROR] result type: {type(result)}; dir: {dir(result)}; repr: {repr(result)}")
+            raise HTTPException(status_code=500, detail=f"Synthesized recipe object has no 'ingredients' attribute: {attr_e}")
         recipe_obj = postgres_repo.create_recipe(
             title=result.title,
-            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in result.ingredients],
+            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
             steps=result.steps,
             servings=result.servings,
             submitted_by=user.user_id
@@ -699,14 +807,44 @@ def validate_recipe(
             print("[DEBUG] Not a validator role")
             raise HTTPException(status_code=403, detail="Only validators can approve/reject recipes")
 
-    # Update recipe approval status
+    # Update recipe approval status and feedback
     recipe.approved = request.approved
-    # Optionally, store feedback/confidence in metadata or another table
-    recipe.metadata["validation_feedback"] = request.feedback
-    recipe.validator_confidence = request.confidence
-    print(f"[DEBUG] Updating recipe: approved={recipe.approved}, feedback={request.feedback}, confidence={request.confidence}")
-    postgres_repo.update(recipe)
+    if request.approved and request.confidence >= 0.9:
+        recipe.rejection_suggestions = []  # Clear suggestions if approved
+    else:
+        # Add feedback to rejection suggestions
+        feedback = f"Confidence: {request.confidence:.2f}. "
+        feedback += request.feedback if request.feedback else "No feedback provided."
+        recipe.rejection_suggestions = [feedback]
 
+    # Save validator ID in metadata if possible
+    if hasattr(recipe, 'metadata'):
+        recipe.metadata['validator_id'] = validator_id
+        recipe.metadata['validation_feedback'] = request.feedback
+        recipe.metadata['validation_confidence'] = request.confidence
+
+    postgres_repo.update(recipe)
+    # Sync to in-memory store for synthesis
+    try:
+        from Module.models import Recipe, Ingredient
+        mem_recipe = Recipe(
+            id=recipe.id,
+            title=recipe.title,
+            ingredients=[Ingredient(name=ing.name, quantity=ing.quantity, unit=ing.unit) for ing in recipe.ingredients],
+            steps=recipe.steps,
+            servings=recipe.servings,
+            metadata=getattr(recipe, 'metadata', {}),
+            ratings=getattr(recipe, 'ratings', []),
+            validator_confidence=getattr(recipe, 'validator_confidence', 0.0),
+            popularity=getattr(recipe, 'popularity', 0),
+            approved=recipe.approved,
+            rejection_suggestions=getattr(recipe, 'rejection_suggestions', [])
+        )
+        km_instance.recipes.add(mem_recipe)
+        km_instance.vstore.index(mem_recipe)
+        print(f"[DEBUG] Synced recipe to in-memory store: {mem_recipe.id}")
+    except Exception as sync_e:
+        print(f"[ERROR] Failed to sync recipe to in-memory store: {sync_e}")
     response = RecipeResponse(
         id=recipe.id,
         title=recipe.title,

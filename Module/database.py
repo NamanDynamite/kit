@@ -194,14 +194,6 @@ class RecipeScore(Base):
     recipe = relationship("Recipe", back_populates="recipe_score")
 
 
-class AdminActionLog(Base):
-    __tablename__ = "admin_action_logs"
-    action_id = Column(String, primary_key=True)
-    admin_id = Column(String, ForeignKey("user.user_id"))
-    action_type = Column(String)
-    timestamp = Column(DateTime)
-    details = Column(Text)
-    admin = relationship("User")
 
 class EventPlan(Base):
     __tablename__ = "event_plans"

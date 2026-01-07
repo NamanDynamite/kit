@@ -1,6 +1,6 @@
 """
 Token economy for rewarding contributors.
-Implements RMDT token rewards for trainers and validators.
+Implements RMDT token rewards for trainers and users.
 """
 
 from typing import Dict
@@ -24,25 +24,7 @@ class TokenEconomy:
         self.ledger.setdefault(key, 0.0)
         self.ledger[key] += amount
 
-    def reward_validator(self, validator: User, amount: float = 0.5):
-        """Reward a validator for validating a recipe.
-        
-        NOTE: AI validators do not receive RMDT rewards.
-        """
-        # AI validators do not receive RMDT rewards
-        if validator.role == 'validator':
-            self.ledger.setdefault(getattr(validator, 'user_id', validator.id), 0.0)
-            return
-        
-        # Only reward if not a validator (should not occur normally)
-        print(f"[DEBUG] reward_validator: validator={validator}, type={type(validator)}")
-        print(f"[DEBUG] reward_validator: hasattr(validator, 'user_id')={hasattr(validator, 'user_id')}, hasattr(validator, 'id')={hasattr(validator, 'id')}")
-        print(f"[DEBUG] reward_validator: validator.user_id={getattr(validator, 'user_id', None)}, validator.id={getattr(validator, 'id', None)}")
-        validator.credit += amount
-        key = getattr(validator, 'user_id', validator.id)
-        print(f"[DEBUG] reward_validator: ledger key={key}")
-        self.ledger.setdefault(key, 0.0)
-        self.ledger[key] += amount
+    # Validator role removed. No reward_validator method needed.
 
     def reward_user_request(self, user: User, amount: float = 0.25):
         """Reward a user for requesting a recipe synthesis.

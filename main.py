@@ -9,11 +9,15 @@ Run:
 
 import pprint
 from Module.controller import KitchenMind
+from Module.repository_postgres import PostgresRecipeRepository
+from Module.database import SessionLocal
 from dataclasses import asdict
 
 
 def example_run():
-    km = KitchenMind()
+    db_session = SessionLocal()
+    repo = PostgresRecipeRepository(db_session)
+    km = KitchenMind(recipe_repo=repo, db_session=db_session)
     # create users
     t = km.create_user('alice_trainer', role='trainer')
     v = km.create_user('bob_validator', role='validator')
