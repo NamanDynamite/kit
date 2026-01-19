@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, Depends
 from typing import List
 from flask import request
@@ -7,6 +6,7 @@ from sqlalchemy.orm import Session
 from Module.database import get_db, init_db, Recipe, Role, User
 from Module.database import DietaryPreferenceEnum
 import hashlib
+from Module.token_utils import create_access_token, create_refresh_token, decode_token
 
 app = FastAPI()
 STATIC_OTP = "123456"
@@ -158,16 +158,59 @@ def verify_otp(request: OTPVerifyRequest, db: Session = Depends(get_db)):
         "phone_number": getattr(db_user, "phone_number", ""),
         "role": db_user.role_id
     }
-    # For now, token is blank. Replace with JWT or session token if needed.
+    # Generate tokens
+    payload = {"user_id": db_user.user_id, "role": db_user.role_id, "email": db_user.email}
+    access_token = create_access_token(payload)
+    refresh_token = create_refresh_token(payload)
     return OTPVerifyResponse(
-        data=user_data,
-        message="Login successful. User verified.",
+        data={
+            "refresh_token": refresh_token,
+            "access_token": access_token
+        },
+        message="Login successful",
         status="success",
-        token=""
+        token=access_token
     )
 
-    #return OTPVerifyResponse(user_id="", first_name="", last_name="", email=request.email, phone_number="", role="", message="User not found.")
-from sqlalchemy.orm import Session
+# Add refresh token endpoint
+from fastapi import HTTPException
+from fastapi import Request
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+@app.post("/refresh-token")
+def refresh_token_endpoint(request: RefreshRequest):
+    try:
+        payload = decode_token(request.refresh_token)
+        # Optionally: check if refresh token is in DB/session and not revoked
+        new_access_token = create_access_token({"user_id": payload["user_id"], "role": payload["role"], "email": payload["email"]})
+        return {
+            "success": True,
+            "message": "Token refreshed",
+            "data": {
+                "access_token": new_access_token
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+# Dependency for protected routes
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+security = HTTPBearer()
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    try:
+        payload = decode_token(credentials.credentials)
+        return payload
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+# Example protected route
+@app.get("/protected")
+def protected_route(user=Depends(get_current_user)):
+    return {"message": "You are authenticated", "user": user}
+
 # PATCH endpoint to update user fields (including admin_action_* fields)
 from fastapi import Body, Depends
 from typing import Any

@@ -1,127 +1,55 @@
+
 # KitchenMind API Documentation
 
 ## Overview
 
-KitchenMind API is a FastAPI-based REST API for recipe management, synthesis, and event planning with PostgreSQL backend.
+KitchenMind API is a FastAPI-based REST API for recipe management, synthesis, and event planning with a PostgreSQL backend. It supports user management, recipe submission/validation, synthesis, event planning, and more.
+
 
 ## Quick Start
 
-### Prerequisites
-- Python 3.8+
-- PostgreSQL 12+
-- pip (Python package manager)
-
-### Installation
-
-1. **Clone or setup the project**
-```bash
-cd "Kitchen Mind"
-```
-
-2. **Create and activate virtual environment**
-```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
-
-# Linux/Mac
-python3 -m venv venv
-source venv/bin/activate
-```
-
-3. **Install dependencies**
-```bash
-pip install -r requirements.txt
-```
-
-4. **Setup PostgreSQL database**
-```bash
-python setup_db.py
-```
-
-5. **Configure environment variables**
-Edit `.env` file with your PostgreSQL credentials:
-```env
-DATABASE_URL=postgresql://kitchenmind:password@localhost:5432/kitchenmind
-```
-
-6. **Run the API server**
-```bash
-# Windows
-run_api.bat
-
-# Linux/Mac
-chmod +x run_api.sh
-./run_api.sh
-
-# Or directly
-python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000
-```
+1. **Install Python 3.8+ and PostgreSQL 12+**
+2. **Clone this repo and create a virtual environment**
+3. **Install dependencies:**
+  ```bash
+  pip install -r requirements.txt
+  ```
+4. **Configure your database in `.env`**
+5. **Initialize the database:**
+  ```bash
+  python setup_db.py
+  ```
+6. **Run the API server:**
+  ```bash
+  run_api.bat  # Windows
+  # or
+  ./run_api.sh # Linux/Mac
+  ```
+7. **Access the API docs:**
+  - Swagger UI: http://localhost:8000/docs
+  - ReDoc: http://localhost:8000/redoc
 
 7. **Access the API**
 - API: http://localhost:8000
 - Documentation: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
-## API Endpoints
-
-### Health Check
-
-#### GET `/`
-Health check and API info
-```json
-{
-  "message": "KitchenMind API",
-  "version": "1.0.0",
-  "status": "online",
-  "docs": "/docs"
-}
-```
-
-#### GET `/health`
-Detailed health check
-```json
-{
-  "status": "healthy",
-  "database": "connected",
-  "api": "running"
-}
-```
 
 ---
 
+## API Endpoints
+
+
+### Health Check
+
+- `GET /` — API info
+- `GET /health` — Health check
+
+
 ### User Management
 
-
-#### POST `/user`
-Create a new user
-```json
-{
-  "name": "Alice Trainer",
-  "email": "alice@example.com",
-  "login_identifier": "alice_trainer",
-  "password_hash": "hashed_password",
-  "auth_type": "local",
-  "role_id": "trainer",
-  "dietary_preference": "vegetarian"
-}
-```
-
-Response:
-```json
-{
-  "user_id": "uuid-string",
-  "name": "Alice Trainer",
-  "email": "alice@example.com",
-  "login_identifier": "alice_trainer",
-  "role_id": "trainer",
-  "dietary_preference": "vegetarian",
-  "rating_score": 0.0,
-  "total_points": 0,
-  "created_at": "2026-01-02T12:00:00Z",
-  "last_login_at": "2026-01-02T12:00:00Z"
-}
-```
+- `POST /user` — Create user
+- `GET /user/{user_id}` — Get user details
 
 #### GET `/user/{user_id}`
 Get user details
@@ -147,50 +75,13 @@ Response:
 
 ---
 
+
 ### Recipe Management
 
-#### POST `/recipes`
-Submit a new recipe (trainer only)
-
-Query parameter: `trainer_id`
-
-Request:
-```json
-{
-  "title": "Idli - South Indian Rice Cakes",
-  "servings": 4,
-  "ingredients": [
-    {
-      "name": "Rice",
-      "quantity": 300,
-      "unit": "g"
-    },
-    {
-      "name": "Urad Dal",
-      "quantity": 100,
-      "unit": "g"
-    }
-  ],
-  "steps": [
-    "Soak rice and urad dal for 4 hours",
-    "Grind into smooth batter",
-    "Ferment overnight",
-    "Steam for 12 minutes"
-  ]
-}
-```
-
-Response:
-```json
-{
-  "id": "recipe-id",
-  "title": "Idli - South Indian Rice Cakes",
-  "servings": 4,
-  "approved": false,
-  "popularity": 0,
-  "avg_rating": 0.0
-}
-```
+- `POST /recipes` — Submit recipe (trainer only)
+- `GET /recipes` — List recipes
+- `GET /recipes/{recipe_id}` — Get recipe details
+- `GET /recipes/pending` — List pending recipes
 
 #### GET `/recipes`
 List recipes
@@ -244,132 +135,25 @@ Response:
 
 ---
 
-### Recipe Validation
 
-#### POST `/recipes/{recipe_id}/validate`
-Validate a recipe (validator only)
+### Recipe Operations
 
-Query parameters:
-- `validator_id`: UUID of the validator
-
-Request:
-```json
-{
-  "approved": true,
-  "feedback": "Well structured recipe",
-  "confidence": 0.85
-}
-```
-
-Response:
-```json
-{
-  "message": "Recipe validated successfully",
-  "recipe_id": "recipe-id",
-  "approved": true
-}
-```
-
-#### POST `/recipes/{recipe_id}/rate`
-Rate a recipe
-
-Query parameters:
-- `user_id`: UUID of the user
-- `rating`: Float 0-5
-
-Response:
-```json
-{
-  "message": "Recipe rated successfully",
-  "recipe_id": "recipe-id",
-  "rating": 4.5,
-  "avg_rating": 4.5
-}
-```
+- `POST /recipes/{recipe_id}/validate` — Validate recipe (validator only)
+- `POST /recipes/{recipe_id}/rate` — Rate recipe
 
 ---
+
 
 ### Recipe Synthesis
 
-#### POST `/recipes/synthesize`
-Synthesize multiple recipes into one
-
-Query parameter: `user_id`
-
-Request:
-```json
-{
-  "dish_name": "Idli",
-  "servings": 5,
-  "top_k": 10,
-  "reorder": true
-}
-```
-
-Response:
-```json
-{
-  "id": "synthesized-recipe-id",
-  "title": "Synthesized - Idli (for 5 servings)",
-  "servings": 5,
-  "steps": [
-    "Soak rice and urad dal...",
-    "Grind into batter...",
-    "Ferment overnight...",
-    "Steam for 12 minutes"
-  ],
-  "ingredients": [
-    {
-      "name": "Rice",
-      "quantity": 375.0,
-      "unit": "g"
-    }
-  ],
-  "metadata": {
-    "sources": ["recipe-id-1", "recipe-id-2"],
-    "ai_confidence": 0.85,
-    "synthesis_method": "llm:google/flan-t5-base"
-  }
-}
-```
+- `POST /recipes/synthesize` — Synthesize recipes
 
 ---
 
+
 ### Event Planning
 
-
-#### POST `/event/plan`
-Plan an event with recipes
-
-Request:
-```json
-{
-  "event_name": "Birthday Party",
-  "guest_count": 20,
-  "budget_per_person": 5.0,
-  "dietary": "vegetarian"
-}
-```
-
-Response:
-```json
-{
-  "event": "Birthday Party",
-  "guests": 20,
-  "budget": 100.0,
-  "menu": [
-    {
-      "title": "Idli",
-      "serves": 4
-    },
-    {
-      "title": "Dosa",
-      "serves": 6
-    }
-  ],
-  "notes": "This is a sample plan..."
-}
-```
+- `POST /event/plan` — Plan event with recipes
 
 ---
 
@@ -396,71 +180,19 @@ Example error response:
 }
 ```
 
+
 ## Database Schema
 
-### Tables
+See [FASTAPI_SETUP.md](FASTAPI_SETUP.md) for schema summary. Main tables:
+- recipes
+- ingredients
+- steps
+- users
 
-**recipes**
-- id (String, PK)
-- title (String)
-- servings (Integer)
-- metadata (JSON)
-- ratings (JSON array)
-- validator_confidence (Float)
-- popularity (Integer)
-- approved (Boolean)
-
-**ingredients**
-- id (Integer, PK)
-- recipe_id (String, FK)
-- name (String)
-- quantity (Float)
-- unit (String)
-
-**steps**
-- id (Integer, PK)
-- recipe_id (String, FK)
-- order (Integer)
-- text (String)
-
-**users**
-- id (String, PK)
-- username (String, unique)
-- role (String)
-- rmdt_balance (Float)
 
 ## Usage Examples
 
-
-### Create User
-```bash
-curl -X POST "http://localhost:8000/user" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Alice Trainer", "email": "alice@example.com", "login_identifier": "alice_trainer", "password_hash": "hashed_password", "auth_type": "local", "role_id": "trainer", "dietary_preference": "vegetarian"}'
-```
-
-### Submit Recipe
-```bash
-curl -X POST "http://localhost:8000/recipes?trainer_id=USER_ID" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Idli",
-    "servings": 4,
-    "ingredients": [{"name": "Rice", "quantity": 300, "unit": "g"}],
-    "steps": ["Step 1", "Step 2"]
-  }'
-```
-
-### Synthesize Recipe
-```bash
-curl -X POST "http://localhost:8000/recipes/synthesize?user_id=USER_ID" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "dish_name": "Idli",
-    "servings": 5,
-    "reorder": true
-  }'
-```
+See [FASTAPI_SETUP.md](FASTAPI_SETUP.md) for curl and Python usage examples.
 
 ## Performance Tips
 
@@ -507,6 +239,7 @@ mypy .
 2. Create feature branch
 3. Make changes
 4. Submit pull request
+
 
 ## License
 

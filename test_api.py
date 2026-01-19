@@ -466,6 +466,24 @@ def test_plan_event():
 
 
 
+
+def test_public_recipe_search():
+    """Test public recipe search endpoint."""
+    print_test("Public Recipe Search")
+    try:
+        response = requests.get(f"{BASE_URL}/public/recipes")
+        if response.status_code == 200:
+            recipes = response.json()
+            print_success(f"Retrieved {len(recipes)} public recipes")
+            return recipes
+        else:
+            print_error(f"Status code: {response.status_code}")
+            print_error(f"Response: {response.text}")
+            return None
+    except Exception as e:
+        print_error(f"Error: {e}")
+        return None
+
 def test_ai_review_recipe(recipe: Dict[str, Any]) -> bool:
     """Test AI review/approval of a recipe."""
     print_test("AI Review Recipe (auto-approve)")
@@ -514,6 +532,7 @@ def run_all_tests():
     login_result = test_verify_otp(login_data["email"], login_otp) if login_data and login_otp else None
     results["login_user"] = login_result is not None
 
+
     public_recipes = test_public_recipe_search()
     results["public_recipe_search"] = public_recipes is not None
 
@@ -554,35 +573,54 @@ def test_login_user():
         return None
 
 def test_verify_otp(email, otp):
-    """Test OTP verification for registration or login."""
+    """Test OTP verification for registration or login, and extract tokens."""
     print_test("Verify OTP")
     data = {"email": email, "otp": otp}
     resp = requests.post(f"{BASE_URL}/verify-otp", json=data)
     if resp.status_code == 200:
         result = resp.json()
-        if result.get("user_id"):
-            print_success("OTP verified, user authenticated")
+        if result.get("success") and result.get("data", {}).get("access_token"):
+            print_success("OTP verified, user authenticated, tokens received")
             return result
         else:
             print_error(f"OTP verification failed: {result.get('message')}")
+            print_error(f"Full response: {result}")
             return None
     else:
         print_error(f"Status code: {resp.status_code}")
         print_error(f"Response: {resp.text}")
         return None
 
-def test_public_recipe_search():
-    """Test public recipe search (no login required)."""
-    print_test("Public Recipe Search (no login)")
-    resp = requests.get(f"{BASE_URL}/public/recipes")
+def test_refresh_token(refresh_token):
+    """Test refresh token endpoint."""
+    print_test("Refresh Token")
+    data = {"refresh_token": refresh_token}
+    resp = requests.post(f"{BASE_URL}/refresh-token", json=data)
     if resp.status_code == 200:
-        recipes = resp.json()
-        print_success(f"Fetched {len(recipes)} public recipes")
-        return recipes
+        result = resp.json()
+        if result.get("success") and result.get("data", {}).get("access_token"):
+            print_success("Access token refreshed successfully")
+            return result["data"]["access_token"]
+        else:
+            print_error(f"Refresh failed: {result.get('message')}")
+            return None
     else:
         print_error(f"Status code: {resp.status_code}")
         print_error(f"Response: {resp.text}")
         return None
+
+def test_protected_route(access_token):
+    """Test protected route with access token."""
+    print_test("Protected Route (JWT)")
+    headers = {"Authorization": f"Bearer {access_token}"}
+    resp = requests.get(f"{BASE_URL}/protected", headers=headers)
+    if resp.status_code == 200:
+        print_success("Accessed protected route successfully")
+        return True
+    else:
+        print_error(f"Status code: {resp.status_code}")
+        print_error(f"Response: {resp.text}")
+        return False
 
     # Health check
     results["health_check"] = test_health_check()
