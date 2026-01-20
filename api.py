@@ -1,12 +1,12 @@
 from fastapi import FastAPI, Depends
 from typing import List
-from flask import request
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, constr, validator
 from sqlalchemy.orm import Session
 from Module.database import get_db, init_db, Recipe, Role, User
 from Module.database import DietaryPreferenceEnum
 import hashlib
 from Module.token_utils import create_access_token, create_refresh_token, decode_token
+
 
 app = FastAPI()
 STATIC_OTP = "123456"
@@ -40,24 +40,33 @@ def public_recipes(db: Session = Depends(get_db)):
             ingredients=[{'name': ing.name, 'quantity': ing.quantity, 'unit': ing.unit} for ing in getattr(r, 'ingredients', [])],
             steps=getattr(r, 'steps', [])
         ))
-    return result
+    return {
+        "status": True,
+        "message": "Public recipes fetched successfully.",
+        "data": result
+    }
 # Login request/response schemas
+PasswordStr = constr(min_length=8)
+
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: EmailStr
+    password: PasswordStr
 
 class LoginResponse(BaseModel):
     email: str
     message: str
 
 # Login endpoint with OTP
-@app.post("/login", response_model=LoginResponse)
+@app.post("/login")
 def login_user(request: LoginRequest, db: Session = Depends(get_db)):
     # Find user by email
     db_user = db.query(User).filter(User.email == request.email).first()
     password_hash = hashlib.sha256(request.password.encode()).hexdigest()
     if not db_user or db_user.password_hash != password_hash:
-        return LoginResponse(email=request.email, message="Invalid email or password.")
+        return {
+            "status": False,
+            "error": {"code": 401, "message": "Invalid email or password."}
+        }
     # Store OTP and expiry in DB
     from datetime import datetime, timedelta
     db_user.otp_hash = hashlib.sha256(STATIC_OTP.encode()).hexdigest()
@@ -65,50 +74,258 @@ def login_user(request: LoginRequest, db: Session = Depends(get_db)):
     db_user.otp_verified = False
     db.commit()
     print(f"[OTP] For login {request.email}: {STATIC_OTP}")
-    return LoginResponse(email=request.email, message="OTP sent to your email. Please verify.")
-from fastapi import status
+    return {
+        "status": True,
+        "message": "OTP sent to your email. Please verify.",
+        "data": {"email": request.email}
+    }
+from fastapi import status, Request
 import random
 from typing import Optional
 # Temporary in-memory store for OTPs and pending users (for demo)
 # Registration request/response schemas
-class RegisterRequest(BaseModel):
-    first_name: str
-    last_name: str
-    email: str
-    phone_number: str
-    password: str
-    role: str
+from typing import Annotated
+FirstNameStr = constr(strip_whitespace=True, min_length=2, max_length=30)
+LastNameStr = constr(strip_whitespace=True, min_length=2, max_length=30)
+PhoneNumberStr = Annotated[
+    str,
+    constr(
+        strip_whitespace=True,
+        pattern=r'^(?:\+91)?[6-9]\d{9}$'
+    )
+]
+PasswordStr = Annotated[str, constr()]
+RoleStr = Annotated[str, constr(strip_whitespace=True)]
+
+
+from fastapi.responses import JSONResponse
+from fastapi.exception_handlers import RequestValidationError
+from fastapi.exceptions import RequestValidationError
+
+from fastapi.exception_handlers import request_validation_exception_handler
+
+@app.exception_handler(RequestValidationError)
+async def custom_validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    for err in errors:
+        loc = err.get("loc", [None, None])
+        msg = err.get("msg", "")
+        # First name errors
+        if loc[1] == "first_name":
+            if "First name may only contain letters, spaces, hyphens, or apostrophes." in msg:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": False,
+                        "error": {"code": 422, "msg": "First name may only contain letters, spaces, hyphens, or apostrophes."}
+                    },
+                )
+            if err.get("type") == "string_too_short":
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": False,
+                        "error": {"code": 422, "msg": "First name must be at least 2 characters."}
+                    },
+                )
+        # Last name errors
+        if loc[1] == "last_name":
+            if "Last name may only contain letters, spaces, hyphens, or apostrophes." in msg:
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": False,
+                        "error": {"code": 422, "msg": "Last name may only contain letters, spaces, hyphens, or apostrophes."}
+                    },
+                )
+            if err.get("type") == "string_too_short":
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": False,
+                        "error": {"code": 422, "msg": "Last name must be at least 2 characters."}
+                    },
+                )
+        # Email errors
+        if loc[1] == "email":
+            if (
+                "value is not a valid email address" in msg
+                or "An email address must have an @-sign." in msg
+                or "email address" in msg
+            ):
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": False,
+                        "error": {"code": 422, "msg": "Email must be a valid email address (e.g., user@example.com)."}
+                    },
+                )
+        # Phone number errors
+        if loc[1] == "phone_number":
+            if (
+                "Phone number must be a valid Indian mobile number" in msg
+                or "string does not match regex" in msg
+                or "ensure this value has at least" in msg
+                or "ensure this value has at most" in msg
+            ):
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": False,
+                        "error": {"code": 422, "msg": "Phone number must be a valid Indian mobile number (10 digits, may start with +91, and must start with 6-9)."}
+                    },
+                )
+        # Password errors
+        if loc[1] == "password":
+            if (
+                "Password must be 8-128 characters" in msg
+                or "Password must be at least 8 characters" in msg
+                or "Password must be a string." in msg
+                or "Password is too common" in msg
+            ):
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": False,
+                        "error": {"code": 422, "msg": "Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a digit, and a special character."}
+                    },
+                )
+        # Role errors
+        if loc[1] == "role":
+            if (
+                "Role must be one of: user, trainer, admin." in msg
+            ):
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": False,
+                        "error": {"code": 422, "msg": "Role must be one of: user, trainer, admin."}
+                    },
+                )
+    # Fallback: return the first error in a user-friendly format
+    if errors:
+        err = errors[0]
+        msg = err.get("msg", "Invalid input.")
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": False,
+                "error": {
+                    "code": 422,
+                    "msg": msg
+                }
+            },
+        )
+    return JSONResponse(
+        status_code=422,
+        content={
+            "status": False,
+            "error": {
+                "code": 422,
+                "msg": "Invalid input. Please check your data and try again."
+            }
+        },
+    )
 
 class RegisterResponse(BaseModel):
     email: str
     message: str
+    status: bool
+
+from typing import Annotated
 
 class OTPVerifyRequest(BaseModel):
-    email: str
-    otp: str
+    email: EmailStr
+    otp: Annotated[
+        str,
+        constr(strip_whitespace=True, min_length=6, max_length=6, pattern=r'^\d{6}$')
+    ]
 
 class OTPVerifyResponse(BaseModel):
-    data: dict
+    status: bool
     message: str
-    status: str
-    token: str
+    data: dict
+
+
+# RegisterRequest: single source of truth for registration validation
+class RegisterRequest(BaseModel):
+    @validator('first_name')
+    def validate_first_name_pattern(cls, v):
+        import re
+        pattern = r"^[A-Za-z\s'-]+$"
+        if not re.match(pattern, v):
+            raise ValueError("First name may only contain letters, spaces, hyphens, or apostrophes.")
+        return v
+
+    @validator('last_name')
+    def validate_last_name_pattern(cls, v):
+        import re
+        pattern = r"^[A-Za-z\s'-]+$"
+        if not re.match(pattern, v):
+            raise ValueError("Last name may only contain letters, spaces, hyphens, or apostrophes.")
+        return v
+
+    @validator('phone_number')
+    def validate_phone_number(cls, v):
+        import re
+        pattern = r'^(?:\+91)?[6-9]\d{9}$'
+        if not re.match(pattern, v):
+            raise ValueError("Phone number must be a valid Indian mobile number (10 digits, may start with +91, and must start with 6-9).")
+        return v
+
+    @validator('password', pre=True, always=True)
+    def validate_password(cls, v):
+        import re
+        if not isinstance(v, str):
+            raise ValueError("Password must be a string.")
+        if len(v) < 8 or len(v) > 128:
+            raise ValueError("Password must be 8-128 characters, include uppercase, lowercase, digit, and special character.")
+        pattern = r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$'
+        if not re.match(pattern, v):
+            raise ValueError("Password must be 8-128 characters, include uppercase, lowercase, digit, and special character.")
+        common_passwords = {"password", "123456", "12345678", "qwerty", "abc123", "111111", "123123", "letmein", "welcome", "admin", "iloveyou", "monkey", "login", "passw0rd", "starwars"}
+        if v.lower() in common_passwords:
+            raise ValueError("Password is too common. Please choose a stronger password.")
+        return v
+
+    @validator('role')
+    def role_must_be_valid(cls, v):
+        allowed = {"user", "trainer", "admin"}
+        v_norm = v.lower().strip() if isinstance(v, str) else v
+        if v_norm not in allowed:
+            raise ValueError("Role must be one of: user, trainer, admin.")
+        return v_norm
+
+    first_name: FirstNameStr
+    last_name: LastNameStr
+    email: EmailStr
+    phone_number: PhoneNumberStr
+    password: str
+    role: RoleStr
 
 # Registration endpoint (no OTP)
-@app.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+
+@app.post("/register", status_code=status.HTTP_201_CREATED)
 def register_user(request: RegisterRequest, db: Session = Depends(get_db)):
+    print("[DEBUG] register_user endpoint called with:", request)
     # Check for duplicate email or phone
     existing_user = db.query(User).filter(User.email == request.email).first()
     if existing_user:
-        return RegisterResponse(email=request.email, message="User already exists.")
+        return {
+            "status": False,
+            "error": {"code": 409, "message": "User already exists."}
+        }
+    # All field validation is handled by Pydantic. No redundant checks here.
+
     import uuid
     from datetime import datetime
-    user_id = str(uuid.uuid4())
+    from sqlalchemy.exc import IntegrityError
+    user_id = str(uuid.uuid4())  # Generate a unique user ID
     db_user = User(
         user_id=user_id,
         name=f"{request.first_name} {request.last_name}",
         email=request.email,
         login_identifier=request.email,
-        
         password_hash=hashlib.sha256(request.password.encode()).hexdigest(),
         auth_type="email",
         role_id=request.role,
@@ -120,57 +337,63 @@ def register_user(request: RegisterRequest, db: Session = Depends(get_db)):
         last_login_at=datetime.utcnow()
     )
     db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return RegisterResponse(email=request.email, message="Registration complete. User created.")
+    try:
+        db.commit()
+        db.refresh(db_user)
+    except IntegrityError as e:
+        db.rollback()
+        # Check for foreign key violation on role_id
+        if "user_role_id_fkey" in str(e.orig):
+            return {
+                "status": False,
+                "error": {"code": 422, "message": "Role must be one of: user, trainer, admin."}
+            }
+        raise
+    return {
+        "status": True,
+        "message": "Registration complete. User created.",
+        "data": {"email": request.email}
+    }
 
-# OTP verification endpoint (login only)
-@app.post("/verify-otp", response_model=OTPVerifyResponse)
+@app.post("/verify-otp")
 def verify_otp(request: OTPVerifyRequest, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == request.email).first()
     otp_hash = hashlib.sha256(request.otp.encode()).hexdigest()
     if not db_user or db_user.otp_hash != otp_hash:
-        return OTPVerifyResponse(
-            data={},
-            message="Invalid or expired OTP.",
-            status="fail",
-            token=""
-        )
+        return {
+            "status": False,
+            "error": {"code": 401, "message": "Invalid or expired OTP."}
+        }
     from datetime import timezone
     if db_user.otp_expires_at and db_user.otp_expires_at < datetime.now(timezone.utc):
-        return OTPVerifyResponse(
-            data={},
-            message="OTP expired.",
-            status="fail",
-            token=""
-        )
+        return {
+            "status": False,
+            "error": {"code": 401, "message": "OTP expired."}
+        }
     db_user.otp_verified = True
     db.commit()
     # Split name into first and last (if possible)
     name_parts = db_user.name.split(" ", 1)
     first_name = name_parts[0]
     last_name = name_parts[1] if len(name_parts) > 1 else ""
+    payload = {"user_id": db_user.user_id, "role": db_user.role_id, "email": db_user.email}
+    access_token = create_access_token(payload)
+    refresh_token = create_refresh_token(payload)
     user_data = {
         "user_id": db_user.user_id,
         "first_name": first_name,
         "last_name": last_name,
         "email": db_user.email,
         "phone_number": getattr(db_user, "phone_number", ""),
-        "role": db_user.role_id
+        "role": db_user.role_id,
+        "access_token": access_token,
+        "refresh_token": refresh_token
     }
-    # Generate tokens
-    payload = {"user_id": db_user.user_id, "role": db_user.role_id, "email": db_user.email}
-    access_token = create_access_token(payload)
-    refresh_token = create_refresh_token(payload)
-    return OTPVerifyResponse(
-        data={
-            "refresh_token": refresh_token,
-            "access_token": access_token
-        },
-        message="Login successful",
-        status="success",
-        token=access_token
-    )
+    return {
+        "status": True,
+        "message": "Welcome! You've successfully logged in.",
+        "data": user_data
+    }
 
 # Add refresh token endpoint
 from fastapi import HTTPException
@@ -183,17 +406,17 @@ class RefreshRequest(BaseModel):
 def refresh_token_endpoint(request: RefreshRequest):
     try:
         payload = decode_token(request.refresh_token)
-        # Optionally: check if refresh token is in DB/session and not revoked
         new_access_token = create_access_token({"user_id": payload["user_id"], "role": payload["role"], "email": payload["email"]})
         return {
-            "success": True,
+            "status": True,
             "message": "Token refreshed",
-            "data": {
-                "access_token": new_access_token
-            }
+            "data": {"access_token": new_access_token}
         }
     except Exception as e:
-        raise HTTPException(status_code=401, detail=str(e))
+        return {
+            "status": False,
+            "error": {"code": 401, "message": str(e)}
+        }
 
 # Dependency for protected routes
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -209,7 +432,11 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 # Example protected route
 @app.get("/protected")
 def protected_route(user=Depends(get_current_user)):
-    return {"message": "You are authenticated", "user": user}
+    return {
+        "status": True,
+        "message": "You are authenticated",
+        "data": {"user": user}
+    }
 
 # PATCH endpoint to update user fields (including admin_action_* fields)
 from fastapi import Body, Depends
@@ -247,7 +474,7 @@ class UserResponse(BaseModel):
     email: str
     login_identifier: str
     role_id: str
-    dietary_preference: str
+    dietary_preference: Optional[str] = None
     rating_score: float
     credit: float
     created_at: str = None
@@ -323,29 +550,39 @@ class UserResponse(BaseModel):
 def update_user(user_id: str, user_update: UserUpdate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "User not found"}
+        }
     update_data = user_update.dict(exclude_unset=True)
     for field, value in update_data.items():
         if field == "dietary_preference" and value is not None:
             try:
                 value = DietaryPreferenceEnum[value] if value in DietaryPreferenceEnum.__members__ else DietaryPreferenceEnum(value)
             except Exception:
-                raise HTTPException(status_code=400, detail=f"Invalid dietary_preference: {value}")
+                return {
+                    "status": False,
+                    "error": {"code": 400, "message": f"Invalid dietary_preference: {value}"}
+                }
         setattr(user, field, value)
     db.commit()
     db.refresh(user)
-    return UserResponse(
-        user_id=user.user_id,
-        name=user.name,
-        email=user.email,
-        login_identifier=user.login_identifier,
-        role_id=user.role_id,
-        dietary_preference=user.dietary_preference.value if user.dietary_preference else None,
-        rating_score=user.rating_score,
-        credit=user.credit,
-        created_at=str(user.created_at) if user.created_at else None,
-        last_login_at=str(user.last_login_at) if user.last_login_at else None
-    )
+    return {
+        "status": True,
+        "message": "User updated successfully.",
+        "data": UserResponse(
+            user_id=user.user_id,
+            name=user.name,
+            email=user.email,
+            login_identifier=user.login_identifier,
+            role_id=user.role_id,
+            dietary_preference=user.dietary_preference.value if user.dietary_preference else None,
+            rating_score=user.rating_score,
+            credit=user.credit,
+            created_at=str(user.created_at) if user.created_at else None,
+            last_login_at=str(user.last_login_at) if user.last_login_at else None
+        )
+    }
 """
 FastAPI application for KitchenMind recipe synthesis system.
 Provides REST API for recipe management, synthesis, and event planning.
@@ -402,10 +639,12 @@ def create_admin_profile(profile: AdminProfileCreate, db: OrmSession = Depends(g
     # Check if email already exists
     exists_query = db.query(exists().where(User.email == profile.email)).scalar()
     if exists_query:
-        raise HTTPException(status_code=409, detail="Admin with this email already exists")
+        return {
+            "status": False,
+            "error": {"code": 409, "message": "Admin with this email already exists"}
+        }
     admin_id = str(uuid.uuid4())
     created_at = datetime.utcnow()
-    # Create admin user in User table with role_id='admin'
     db_admin = User(
         user_id=admin_id,
         name=profile.name,
@@ -424,25 +663,36 @@ def create_admin_profile(profile: AdminProfileCreate, db: OrmSession = Depends(g
     db.add(db_admin)
     db.commit()
     db.refresh(db_admin)
-    return AdminProfileResponse(
-        admin_id=db_admin.user_id,
-        name=db_admin.name,
-        email=db_admin.email,
-        created_at=str(db_admin.created_at)
-    )
+    return {
+        "status": True,
+        "message": "Admin profile created successfully.",
+        "data": AdminProfileResponse(
+            admin_id=db_admin.user_id,
+            name=db_admin.name,
+            email=db_admin.email,
+            created_at=str(db_admin.created_at)
+        )
+    }
 
 
 @app.get("/admin_profiles/{admin_id}", response_model=AdminProfileResponse)
 def get_admin_profile(admin_id: str, db: OrmSession = Depends(get_db)):
     admin = db.query(User).filter(User.user_id == admin_id, User.role_id == "admin").first()
     if not admin:
-        raise HTTPException(status_code=404, detail="Admin profile not found")
-    return AdminProfileResponse(
-        admin_id=admin.user_id,
-        name=admin.name,
-        email=admin.email,
-        created_at=str(admin.created_at)
-    )
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "Admin profile not found"}
+        }
+    return {
+        "status": True,
+        "message": "Admin profile fetched successfully.",
+        "data": AdminProfileResponse(
+            admin_id=admin.user_id,
+            name=admin.name,
+            email=admin.email,
+            created_at=str(admin.created_at)
+        )
+    }
 
 
 from sqlalchemy.orm import Session as OrmSession
@@ -466,17 +716,18 @@ def create_session(session: SessionCreate, db: Session = Depends(get_db), reques
     print(f"[DEBUG] User lookup for session: {user}")
     if not user:
         print(f"[DEBUG] User not found for session: {session.user_id}")
-        raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "User not found"}
+        }
     from Module.database import Session as DBSession
     import uuid
     from datetime import datetime, timedelta
     now = datetime.utcnow()
-    # Extract user agent and IP address from request
     user_agent = None
     ip_address = None
     if request is not None:
         user_agent = request.headers.get("user-agent")
-        # Try X-Forwarded-For first, then fallback to client.host
         ip_address = request.headers.get("x-forwarded-for")
         if not ip_address and request.client:
             ip_address = request.client.host
@@ -494,11 +745,15 @@ def create_session(session: SessionCreate, db: Session = Depends(get_db), reques
     db.commit()
     db.refresh(db_session)
     print(f"[DEBUG] Session created: {db_session.session_id} for user: {db_session.user_id}")
-    return SessionResponse(
-        session_id=db_session.session_id,
-        user_id=db_session.user_id,
-        created_at=str(db_session.created_at)
-    )
+    return {
+        "status": True,
+        "message": "Session created successfully.",
+        "data": SessionResponse(
+            session_id=db_session.session_id,
+            user_id=db_session.user_id,
+            created_at=str(db_session.created_at)
+        )
+    }
 
 # Add CORS middleware
 app.add_middleware(
@@ -588,37 +843,54 @@ class RoleResponse(BaseModel):
 def get_role(role_id: str, db: Session = Depends(get_db)):
     db_role = db.query(Role).filter(Role.role_id == role_id).first()
     if not db_role:
-        raise HTTPException(status_code=404, detail=f"Role '{role_id}' not found.")
-    return RoleResponse(
-        role_id=db_role.role_id,
-        role_name=db_role.role_name,
-        description=db_role.description
-    )
+        return {
+            "status": False,
+            "error": {"code": 404, "message": f"Role '{role_id}' not found."}
+        }
+    return {
+        "status": True,
+        "message": "Role fetched successfully.",
+        "data": RoleResponse(
+            role_id=db_role.role_id,
+            role_name=db_role.role_name,
+            description=db_role.description
+        )
+    }
 
 # Fetch a user by email
 @app.get("/user/email/{email}", response_model=UserResponse)
 def get_user_by_email(email: str, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.email == email).first()
     if not db_user:
-        raise HTTPException(status_code=404, detail=f"User with email '{email}' not found.")
-    return UserResponse(
-        user_id=db_user.user_id,
-        name=db_user.name,
-        email=db_user.email,
-        login_identifier=db_user.login_identifier,
-        role_id=db_user.role_id,
-        dietary_preference=db_user.dietary_preference.value if db_user.dietary_preference else None,
-        rating_score=db_user.rating_score,
-        credit=db_user.credit,
-        created_at=str(db_user.created_at) if db_user.created_at else None,
-        last_login_at=str(db_user.last_login_at) if db_user.last_login_at else None
-    )
+        return {
+            "status": False,
+            "error": {"code": 404, "message": f"User with email '{email}' not found."}
+        }
+    return {
+        "status": True,
+        "message": "User fetched successfully.",
+        "data": UserResponse(
+            user_id=db_user.user_id,
+            name=db_user.name,
+            email=db_user.email,
+            login_identifier=db_user.login_identifier,
+            role_id=db_user.role_id,
+            dietary_preference=db_user.dietary_preference.value if db_user.dietary_preference else None,
+            rating_score=db_user.rating_score,
+            credit=db_user.credit,
+            created_at=str(db_user.created_at) if db_user.created_at else None,
+            last_login_at=str(db_user.last_login_at) if db_user.last_login_at else None
+        )
+    }
 
 @app.post("/roles", response_model=RoleResponse)
 def create_role(role: RoleCreate, db: Session = Depends(get_db)):
     existing = db.query(Role).filter(Role.role_id == role.role_id).first()
     if existing:
-        raise HTTPException(status_code=409, detail=f"Role with role_id '{role.role_id}' already exists.")
+        return {
+            "status": False,
+            "error": {"code": 409, "message": f"Role with role_id '{role.role_id}' already exists."}
+        }
     db_role = Role(
         role_id=role.role_id,
         role_name=role.role_name,
@@ -627,16 +899,24 @@ def create_role(role: RoleCreate, db: Session = Depends(get_db)):
     db.add(db_role)
     db.commit()
     db.refresh(db_role)
-    return RoleResponse(
-        role_id=db_role.role_id,
-        role_name=db_role.role_name,
-        description=db_role.description
-    )
+    return {
+        "status": True,
+        "message": "Role created successfully.",
+        "data": RoleResponse(
+            role_id=db_role.role_id,
+            role_name=db_role.role_name,
+            description=db_role.description
+        )
+    }
 
 @app.get("/roles", response_model=list[RoleResponse])
 def list_roles(db: Session = Depends(get_db)):
     roles = db.query(Role).all()
-    return [RoleResponse(role_id=r.role_id, role_name=r.role_name, description=r.description) for r in roles]
+    return {
+        "status": True,
+        "message": "Roles fetched successfully.",
+        "data": [RoleResponse(role_id=r.role_id, role_name=r.role_name, description=r.description) for r in roles]
+    }
 
 
 class RecipeSynthesisRequest(BaseModel):
@@ -727,63 +1007,6 @@ def health_check():
 
 
 
-@app.post("/user", response_model=UserResponse)
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    print(f"[DEBUG] create_user called with: {user}")
-    # Check if role exists
-    role = db.query(Role).filter(Role.role_id == user.role_id).first()
-    print(f"[DEBUG] Role lookup for '{user.role_id}': {role}")
-    if not role:
-        print(f"[DEBUG] Role '{user.role_id}' does not exist.")
-        raise HTTPException(status_code=400, detail=f"Role '{user.role_id}' does not exist.")
-
-    # Check for duplicate email or login_identifier
-    if db.query(User).filter(User.email == user.email).first():
-        print(f"[DEBUG] Duplicate email: {user.email}")
-        raise HTTPException(status_code=409, detail=f"User with email '{user.email}' already exists.")
-    if db.query(User).filter(User.login_identifier == user.login_identifier).first():
-        print(f"[DEBUG] Duplicate login_identifier: {user.login_identifier}")
-        raise HTTPException(status_code=409, detail=f"User with login_identifier '{user.login_identifier}' already exists.")
-
-    # Convert dietary_preference to Enum
-    try:
-        dietary_pref = DietaryPreferenceEnum[user.dietary_preference] if user.dietary_preference in DietaryPreferenceEnum.__members__ else DietaryPreferenceEnum(user.dietary_preference)
-        print(f"[DEBUG] dietary_preference enum: {dietary_pref}")
-    except Exception as e:
-        print(f"[DEBUG] Invalid dietary_preference: {user.dietary_preference}, error: {e}")
-        raise HTTPException(status_code=400, detail=f"Invalid dietary_preference: {user.dietary_preference}")
-
-    now = datetime.utcnow()
-    db_user = User(
-        user_id=str(uuid.uuid4()),
-        name=user.name,
-        email=user.email,
-        login_identifier=user.login_identifier,
-        password_hash=user.password_hash,
-        auth_type=user.auth_type,
-        role_id=user.role_id,
-        dietary_preference=dietary_pref,
-        rating_score=0.0,
-        credit=0.0,
-        created_at=now,
-        last_login_at=now
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    print(f"[DEBUG] User created: {db_user.user_id}")
-    return UserResponse(
-        user_id=db_user.user_id,
-        name=db_user.name,
-        email=db_user.email,
-        login_identifier=db_user.login_identifier,
-        role_id=db_user.role_id,
-        dietary_preference=db_user.dietary_preference.value if db_user.dietary_preference else None,
-        rating_score=db_user.rating_score,
-        credit=db_user.credit,
-        created_at=str(db_user.created_at) if db_user.created_at else None,
-        last_login_at=str(db_user.last_login_at) if db_user.last_login_at else None
-    )
 
 
 
@@ -791,19 +1014,26 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
 def get_user(user_id: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return UserResponse(
-        user_id=user.user_id,
-        name=user.name,
-        email=user.email,
-        login_identifier=user.login_identifier,
-        role_id=user.role_id,
-        dietary_preference=user.dietary_preference,
-        rating_score=user.rating_score,
-        credit=user.credit,
-        created_at=str(user.created_at) if user.created_at else None,
-        last_login_at=str(user.last_login_at) if user.last_login_at else None
-    )
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "User not found"}
+        }
+    return {
+        "status": True,
+        "message": "User fetched successfully.",
+        "data": UserResponse(
+            user_id=user.user_id,
+            name=user.name,
+            email=user.email,
+            login_identifier=user.login_identifier,
+            role_id=user.role_id,
+            dietary_preference=user.dietary_preference,
+            rating_score=user.rating_score,
+            credit=user.credit,
+            created_at=str(user.created_at) if user.created_at else None,
+            last_login_at=str(user.last_login_at) if user.last_login_at else None
+        )
+    }
 
 
 # ============================================================================
@@ -825,10 +1055,12 @@ def submit_recipe(
     trainer = db.query(User).filter(User.user_id == trainer_id).first()
     print(f"[DEBUG] trainer: {trainer}")
     if not trainer:
-        raise HTTPException(status_code=404, detail="Trainer not found")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "Trainer not found"}
+        }
 
     print(f"[DEBUG] trainer.role: {trainer.role}, type: {type(trainer.role)}")
-    # Handle SQLAlchemy Role object, Enum, or string
     trainer_role = trainer.role
     if hasattr(trainer_role, 'role_id'):
         trainer_role = trainer_role.role_id
@@ -836,10 +1068,11 @@ def submit_recipe(
         trainer_role = trainer_role.value
     print(f"[DEBUG] normalized trainer_role: {trainer_role}")
     if str(trainer_role).lower() not in ["trainer", "admin"]:
-        raise HTTPException(status_code=403, detail="Only trainers can submit recipes")
+        return {
+            "status": False,
+            "error": {"code": 403, "message": "Only trainers can submit recipes"}
+        }
 
-
-    # Convert ingredients to IngredientCreate objects if they are dicts
     from pydantic import parse_obj_as
     if recipe.ingredients and isinstance(recipe.ingredients[0], dict):
         ingredients_obj = parse_obj_as(List[IngredientCreate], recipe.ingredients)
@@ -847,7 +1080,6 @@ def submit_recipe(
         ingredients_obj = recipe.ingredients
 
     try:
-        # Create and save recipe using repository directly
         postgres_repo = PostgresRecipeRepository(db)
         print(f"[DEBUG] PostgresRecipeRepository created: {postgres_repo}")
         recipe_obj = postgres_repo.create_recipe(
@@ -859,10 +1091,8 @@ def submit_recipe(
         )
         print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
         print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
-        # Sync to in-memory store for synthesis
         try:
             from Module.models import Recipe, Ingredient
-            # Convert DB recipe to in-memory Recipe model
             mem_recipe = Recipe(
                 recipe_id=recipe_obj.id,
                 title=recipe_obj.title,
@@ -881,8 +1111,6 @@ def submit_recipe(
             print(f"[DEBUG] Synced recipe to in-memory store: {mem_recipe.id}")
         except Exception as sync_e:
             print(f"[ERROR] Failed to sync recipe to in-memory store: {sync_e}")
-        # Ensure ingredients and steps are in the expected format
-        # Get version_id from the database
         version_id = None
         from Module.database import Recipe as DBRecipe
         db_recipe = db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
@@ -895,15 +1123,21 @@ def submit_recipe(
             servings=recipe_obj.servings,
             approved=recipe_obj.approved,
             popularity=getattr(recipe_obj, 'popularity', 0),
-            # avg_rating removed from response
             ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
             steps=getattr(recipe_obj, 'steps', [])
         )
         print(f"[DEBUG] RecipeResponse: {response}")
-        return response
+        return {
+            "status": True,
+            "message": "Recipe submitted successfully.",
+            "data": response
+        }
     except Exception as e:
         print(f"[ERROR] submit_recipe exception: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        return {
+            "status": False,
+            "error": {"code": 400, "message": str(e)}
+        }
 
 
 @app.get("/recipes", response_model=List[RecipeResponse])
@@ -928,12 +1162,15 @@ def list_recipes(
             servings=r.servings,
             approved=r.approved,
             popularity=getattr(r, "popularity", 0),
-            # avg_rating removed from response
             ingredients=[i for i in getattr(r, 'ingredients', [])],
             steps=[s for s in getattr(r, 'steps', [])]
         ))
     print(f"[DEBUG] list_recipes response: {response}")
-    return response
+    return {
+        "status": True,
+        "message": "Recipes fetched successfully.",
+        "data": response
+    }
 
 
 # ============================================================================
@@ -955,7 +1192,10 @@ def synthesize_recipe(
     print(f"[DEBUG] user_id: {user.user_id}, credit: {getattr(user, 'credit', None)}")
     if not user:
         print("[ERROR] User not found")
-        raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "No user found with the provided user ID. Please check and try again."}
+        }
 
     try:
             # Synthesize recipe using controller, then save using repository
@@ -974,7 +1214,10 @@ def synthesize_recipe(
             print(f"[DEBUG] After ensure_recipe_dataclass: type={type(result)}, dir={dir(result)}, repr={repr(result)}")
             if not hasattr(result, 'ingredients') or not isinstance(result.ingredients, (list, tuple)):
                 print(f"[ERROR] Synthesized recipe has no 'ingredients' attribute after ensure_recipe_dataclass. type={type(result)}, dir={dir(result)}, repr={repr(result)}")
-                raise HTTPException(status_code=500, detail="Synthesized recipe has no 'ingredients' attribute after conversion.")
+                return {
+                    "status": False,
+                    "error": {"code": 500, "message": "Sorry, there was a problem generating the recipe. Please try again or contact support."}
+                }
             postgres_repo = PostgresRecipeRepository(db)
             print(f"[DEBUG] PostgresRecipeRepository created: {postgres_repo}")
             try:
@@ -982,7 +1225,10 @@ def synthesize_recipe(
             except Exception as attr_e:
                 print(f"[ERROR] Exception accessing result.ingredients: {attr_e}")
                 print(f"[ERROR] result type: {type(result)}; dir: {dir(result)}; repr: {repr(result)}")
-                raise HTTPException(status_code=500, detail=f"Synthesized recipe object has no 'ingredients' attribute: {attr_e}")
+                return {
+                    "status": False,
+                    "error": {"code": 500, "message": "Sorry, there was a problem accessing the recipe ingredients. Please try again or contact support."}
+                }
             recipe_obj = postgres_repo.create_recipe(
                 title=result.title,
                 ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
@@ -1014,7 +1260,10 @@ def synthesize_recipe(
             return response
     except Exception as e:
         print(f"[ERROR] synthesize_recipe exception: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        return {
+            "status": False,
+            "error": {"code": 400, "message": "An unexpected error occurred while synthesizing the recipe. Please try again later."}
+        }
 
 
 @app.get("/recipes/pending")
@@ -1063,11 +1312,17 @@ def ai_review_recipe(version_id: str, db: Session = Depends(get_db)):
     version = db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
     if not version:
         print(f"[DEBUG] Provided version_id '{version_id}' not found in recipe_versions table.")
-        raise HTTPException(status_code=404, detail="Recipe version not found")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "No recipe version found with the provided ID."}
+        }
     # Find the parent recipe
     recipe = version.recipe
     if not recipe:
-        raise HTTPException(status_code=404, detail="Recipe not found for this version")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "No parent recipe found for this version."}
+        }
 
     # Use ai_validate_recipe utility (calls OpenAI)
     approved, feedback, confidence = ai_validate_recipe(
@@ -1138,11 +1393,17 @@ def get_single_recipe_by_version(version_id: str, db: Session = Depends(get_db))
     version = db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
     if not version:
         print("[DEBUG] Recipe version not found")
-        raise HTTPException(status_code=404, detail="Recipe version not found")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "No recipe version found with the provided ID."}
+        }
     recipe = version.recipe
     if not recipe:
         print("[DEBUG] Parent recipe not found for version")
-        raise HTTPException(status_code=404, detail="Parent recipe not found for version")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "No parent recipe found for this version."}
+        }
     # Determine approval status from latest Validation record
     from Module.database import Validation
     latest_validation = (
@@ -1191,7 +1452,10 @@ def rate_recipe(
     version = db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
     if not version:
         print("[DEBUG] Recipe version not found")
-        raise HTTPException(status_code=404, detail="Recipe version not found")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "No recipe version found with the provided ID."}
+        }
     recipe_id = version.recipe_id
     from Module.repository_postgres import PostgresRecipeRepository
     postgres_repo = PostgresRecipeRepository(db)
@@ -1199,7 +1463,10 @@ def rate_recipe(
     user = db.query(User).filter(User.user_id == user_id).first()
     if not user:
         print("[DEBUG] User not found")
-        raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "status": False,
+            "error": {"code": 404, "message": "No user found with the provided user ID. Please check and try again."}
+        }
     # Add or update rating and comment
     feedback = postgres_repo.add_rating(version_id, user_id, rating, comment)
     print(f"[DEBUG] Rating and comment added/updated for version {version_id} by user {user_id}")
@@ -1234,8 +1501,12 @@ async def general_exception_handler(request, exc):
     return JSONResponse(
         status_code=500,
         content={
-            "error": "Internal server error",
-            "detail": str(exc)
+            "status": False,
+            "error": {
+                "code": 500,
+                "msg": "Internal server error",
+                "detail": str(exc)
+            }
         }
     )
 

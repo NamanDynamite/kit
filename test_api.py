@@ -579,7 +579,7 @@ def test_verify_otp(email, otp):
     resp = requests.post(f"{BASE_URL}/verify-otp", json=data)
     if resp.status_code == 200:
         result = resp.json()
-        if result.get("success") and result.get("data", {}).get("access_token"):
+        if result.get("status") is True and result.get("access_token"):
             print_success("OTP verified, user authenticated, tokens received")
             return result
         else:
