@@ -7,7 +7,7 @@ import requests
 import json
 from typing import Dict, Any
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8000/api"
 
 # Colors for output
 GREEN = "\033[92m"
@@ -35,7 +35,8 @@ def test_health_check():
     """Test health check endpoint."""
     print_test("Health Check")
     try:
-        response = requests.get(f"{BASE_URL}/health")
+        # Health check is at root, not under /api
+        response = requests.get("http://localhost:8000/health")
         if response.status_code == 200:
             print_success("API is healthy")
             return True
@@ -48,34 +49,32 @@ def test_health_check():
 
 
 
+def _unwrap(resp_json: Dict[str, Any]) -> Any:
+    """Helper to unwrap `{status,message,data}` payloads."""
+    if isinstance(resp_json, dict) and "data" in resp_json:
+        return resp_json["data"]
+    return resp_json
+
+
 def test_create_role() -> Dict[str, Any]:
-    """Test role creation."""
+    """Test role creation (wrapped response)."""
     print_test("Create Role")
+    role_data = {"role_id": "trainer", "role_name": "TRAINER", "description": "Trainer role"}
     try:
-        role_data = {
-            "role_id": "trainer",
-            "role_name": "TRAINER",
-            "description": "Trainer role"
-        }
         response = requests.post(f"{BASE_URL}/roles", json=role_data)
         if response.status_code in (200, 201):
-            role = response.json()
-            print_success(f"Role created: {role['role_name']}")
-            return role
-        elif response.status_code == 409:
-            # Fetch existing role if duplicate
+            payload = _unwrap(response.json())
+            print_success(f"Role created: {payload.get('role_name')}")
+            return payload
+        if response.status_code == 409:
             get_resp = requests.get(f"{BASE_URL}/roles/{role_data['role_id']}")
             if get_resp.status_code == 200:
-                role = get_resp.json()
-                print_success(f"Role exists: {role['role_name']}")
-                return role
-            print_error(f"Status code: {response.status_code}")
-            print_error(f"Response: {response.text}")
-            return None
-        else:
-            print_error(f"Status code: {response.status_code}")
-            print_error(f"Response: {response.text}")
-            return None
+                payload = _unwrap(get_resp.json())
+                print_success(f"Role exists: {payload.get('role_name')}")
+                return payload
+        print_error(f"Status code: {response.status_code}")
+        print_error(f"Response: {response.text}")
+        return None
     except Exception as e:
         print_error(f"Error: {e}")
         return None
@@ -91,16 +90,16 @@ def test_create_admin_role() -> Dict[str, Any]:
         }
         response = requests.post(f"{BASE_URL}/roles", json=role_data)
         if response.status_code in (200, 201):
-            role = response.json()
-            print_success(f"Admin role created: {role['role_name']}")
-            return role
+            payload = _unwrap(response.json())
+            print_success(f"Admin role created: {payload.get('role_name')}")
+            return payload
         elif response.status_code == 409:
             # Fetch existing role if duplicate
             get_resp = requests.get(f"{BASE_URL}/roles/{role_data['role_id']}")
             if get_resp.status_code == 200:
-                role = get_resp.json()
-                print_success(f"Admin role exists: {role['role_name']}")
-                return role
+                payload = _unwrap(get_resp.json())
+                print_success(f"Admin role exists: {payload.get('role_name')}")
+                return payload
             print_error(f"Status code: {response.status_code}")
             print_error(f"Response: {response.text}")
             return None
@@ -113,51 +112,32 @@ def test_create_admin_role() -> Dict[str, Any]:
         return None
 
 def test_create_user(role_id: str = "trainer") -> Dict[str, Any]:
-    """Test user creation."""
+    """Test user creation via register endpoint."""
     print_test("Create User")
+    user_data = {
+        "first_name": "Test",
+        "last_name": "Trainer" if role_id != "admin" else "Admin",
+        "email": "test_trainer@example.com" if role_id != "admin" else "test_admin@example.com",
+        "phone_number": "+919999999999",
+        "password": "TestPass123!@",
+        "role": role_id,
+    }
     try:
-        if role_id == "admin":
-            user_data = {
-                "name": "Test Admin",
-                "email": "test_admin@example.com",
-                "login_identifier": "test_admin",
-                "password_hash": "hashedpassword",
-                "auth_type": "password",
-                "role_id": "admin",
-                "dietary_preference": "VEG"
-            }
-        else:
-            user_data = {
-                "name": "Test Trainer",
-                "email": "test_trainer@example.com",
-                "login_identifier": "test_trainer",
-                "password_hash": "hashedpassword",
-                "auth_type": "password",
-                "role_id": role_id,
-                "dietary_preference": "VEG"
-            }
-        print(f"[DEBUG] Creating user with data: {user_data}")
-        response = requests.post(f"{BASE_URL}/user", json=user_data)
-        print(f"[DEBUG] Response status: {response.status_code}")
-        print(f"[DEBUG] Response text: {response.text}")
+        response = requests.post(f"{BASE_URL}/register", json=user_data)
         if response.status_code in (200, 201):
-            user = response.json()
-            print_success(f"User created: {user['name']}")
-            return user
-        elif response.status_code == 409:
-            # Fetch existing user if duplicate
+            payload = response.json()
+            if payload.get("status"):
+                print_success(f"User registered: {user_data['email']}")
+                return user_data
+        if response.status_code == 409:
             get_resp = requests.get(f"{BASE_URL}/user/email/{user_data['email']}")
             if get_resp.status_code == 200:
-                user = get_resp.json()
-                print_success(f"User exists: {user['name']}")
-                return user
-            print_error(f"Status code: {get_resp.status_code}")
-            print_error(f"Response: {get_resp.text}")
-            return None
-        else:
-            print_error(f"Status code: {response.status_code}")
-            print_error(f"Response: {response.text}")
-            return None
+                payload = _unwrap(get_resp.json())
+                print_success(f"User exists: {payload.get('email', user_data['email'])}")
+                return payload
+        print_error(f"Status code: {response.status_code}")
+        print_error(f"Response: {response.text}")
+        return None
     except Exception as e:
         print_error(f"Error: {e}")
         return None
@@ -171,20 +151,20 @@ def test_create_admin_profile(user: Dict[str, Any]) -> Dict[str, Any]:
         }
         response = requests.post(f"{BASE_URL}/admin_profiles", json=profile_data)
         if response.status_code in (200, 201):
-            admin = response.json()
-            print_success(f"Admin profile created: {admin['name']}")
+            admin = _unwrap(response.json())
+            print_success(f"Admin profile created: {admin.get('name')}")
             return admin
         elif response.status_code == 409:
             # Fetch existing admin by searching for user with this email, then get admin profile
             email = user.get("email")
             user_resp = requests.get(f"{BASE_URL}/user/email/{email}")
             if user_resp.status_code == 200:
-                user_obj = user_resp.json()
+                user_obj = _unwrap(user_resp.json())
                 admin_id = user_obj.get("user_id") or user_obj.get("id")
                 get_resp = requests.get(f"{BASE_URL}/admin_profiles/{admin_id}")
                 if get_resp.status_code == 200:
-                    admin = get_resp.json()
-                    print_success(f"Admin profile exists: {admin['name']}")
+                    admin = _unwrap(get_resp.json())
+                    print_success(f"Admin profile exists: {admin.get('name')}")
                     return admin
                 print_error(f"Status code: {get_resp.status_code}")
                 print_error(f"Response: {get_resp.text}")
@@ -211,8 +191,8 @@ def test_create_session(user: Dict[str, Any]) -> Dict[str, Any]:
         }
         response = requests.post(f"{BASE_URL}/session", json=session_data)
         if response.status_code in (200, 201):
-            session = response.json()
-            print_success(f"Session created: {session['session_id']}")
+            session = _unwrap(response.json())
+            print_success(f"Session created: {session.get('session_id')}")
             return session
         else:
             print_error(f"Status code: {response.status_code}")
@@ -262,7 +242,7 @@ def test_submit_recipe(trainer: Dict[str, Any]) -> Dict[str, Any]:
     if not trainer:
         print_error("No trainer provided")
         return None
-    
+
     try:
         recipe_data = {
             "title": "Idli",  # Use exact title for synthesis to succeed
@@ -280,17 +260,18 @@ def test_submit_recipe(trainer: Dict[str, Any]) -> Dict[str, Any]:
                 "Steam for 12 minutes"
             ]
         }
-        print(f"[DEBUG TEST] Sending POST /recipe with trainer_id={trainer.get('user_id')}, data={recipe_data}")
+        trainer_id = trainer.get("user_id") or trainer.get("id")
+        print(f"[DEBUG TEST] Sending POST /recipe with trainer_id={trainer_id}, data={recipe_data}")
         response = requests.post(
             f"{BASE_URL}/recipe",
             json=recipe_data,
-            params={"trainer_id": trainer["user_id"]}
+            params={"trainer_id": trainer_id}
         )
         print(f"[DEBUG TEST] Response status: {response.status_code}")
         print(f"[DEBUG TEST] Response text: {response.text}")
         if response.status_code == 200:
-            recipe = response.json()
-            print_success(f"Recipe created: {recipe['title']}")
+            recipe = _unwrap(response.json())
+            print_success(f"Recipe created: {recipe.get('title')}")
             return recipe
         else:
             print_error(f"Status code: {response.status_code}")
@@ -307,7 +288,7 @@ def test_get_recipes() -> list:
     try:
         response = requests.get(f"{BASE_URL}/recipes", params={"approved_only": False})
         if response.status_code == 200:
-            recipes = response.json()
+            recipes = _unwrap(response.json()) or []
             print_success(f"Retrieved {len(recipes)} recipes")
             return recipes
         else:
@@ -333,8 +314,8 @@ def test_get_recipe(recipe: Dict[str, Any]):
             return False
         response = requests.get(f"{BASE_URL}/recipe/version/{version_id}")
         if response.status_code == 200:
-            retrieved = response.json()
-            print_success(f"Retrieved recipe: {retrieved['title']}")
+            retrieved = _unwrap(response.json())
+            print_success(f"Retrieved recipe: {retrieved.get('title')}")
             return True
         else:
             print_error(f"Status code: {response.status_code}")
@@ -369,13 +350,13 @@ def test_rate_recipe(user: Dict[str, Any], recipe: Dict[str, Any]):
         print(f"[DEBUG TEST] rate_recipe status: {response.status_code}")
         print(f"[DEBUG TEST] rate_recipe text: {response.text}")
         if response.status_code == 200:
-            result = response.json()
-            if 'id' not in result and 'recipe_id' in result:
+            result = _unwrap(response.json())
+            if isinstance(result, dict) and 'id' not in result and 'recipe_id' in result:
                 result['id'] = result['recipe_id']
             print_success(f"Recipe rated: {result}")
             print(f"[DEBUG TEST] rate_recipe response: {result}")
             print(f"[DEBUG TEST] rate_recipe type: {type(result)}, keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
-            if 'id' not in result:
+            if isinstance(result, dict) and 'id' not in result:
                 print_error("'id' key missing in rate_recipe response!")
             return True
         else:
@@ -409,14 +390,14 @@ def test_synthesize_recipe(user: Dict[str, Any]):
         print(f"[DEBUG TEST] synthesize_recipe status: {response.status_code}")
         print(f"[DEBUG TEST] synthesize_recipe text: {response.text}")
         if response.status_code == 200:
-            result = response.json()
+            result = _unwrap(response.json())
             print_success(f"Recipe synthesized: {result}")
             print(f"[DEBUG TEST] synthesize_recipe response: {result}")
             print(f"[DEBUG TEST] synthesize_recipe type: {type(result)}, keys: {list(result.keys()) if isinstance(result, dict) else 'N/A'}")
-            if 'recipe_id' not in result and 'version_id' not in result:
+            if isinstance(result, dict) and 'recipe_id' not in result and 'version_id' not in result:
                 print_error("'recipe_id' or 'version_id' key missing in synthesize_recipe response!")
             # Print steps with explicit minutes
-            steps = result.get('steps', [])
+            steps = result.get('steps', []) if isinstance(result, dict) else []
             print("\n[TEST] Steps with explicit minutes:")
             for step in steps:
                 if any(word in step.lower() for word in ['minute', 'minutes', 'min']):
@@ -435,15 +416,30 @@ def test_plan_event():
     """Test event planning."""
     print_test("Plan Event")
     try:
-        # You must provide a valid user_id for event planning
-        # For test, create or fetch a user
-        user_resp = requests.get(f"{BASE_URL}/user/email/test_trainer@example.com")
-        if user_resp.status_code == 200:
-            user = user_resp.json()
-            user_id = user.get("user_id") or user.get("id")
-        else:
-            print_error("No test user found for event planning")
+        # Create or fetch a trainer user for event planning
+        user_data = {
+            "first_name": "Test",
+            "last_name": "Trainer",
+            "email": "test_trainer@example.com",
+            "phone_number": "+919999999999",
+            "password": "TestPass123!@",
+            "role": "trainer",
+        }
+        # Try to create; if exists, fetch it
+        reg_resp = requests.post(f"{BASE_URL}/register", json=user_data)
+        user_id = None
+        if reg_resp.status_code in (200, 201):
+            user_id = user_data.get("user_id")
+        if not user_id or reg_resp.status_code == 409:
+            # User may already exist; fetch it
+            user_resp = requests.get(f"{BASE_URL}/user/email/{user_data['email']}")
+            if user_resp.status_code == 200:
+                user = _unwrap(user_resp.json())
+                user_id = user.get("user_id") or user.get("id")
+        if not user_id:
+            print_error("Could not create or find test user for event planning")
             return False
+        
         event_data = {
             "user_id": user_id,
             "event_name": "Test Party",
@@ -453,8 +449,8 @@ def test_plan_event():
         }
         response = requests.post(f"{BASE_URL}/event/plan", json=event_data)
         if response.status_code == 200:
-            result = response.json()
-            print_success(f"Event planned: {result['event']}")
+            result = _unwrap(response.json())
+            print_success(f"Event planned: {result.get('event') if isinstance(result, dict) else result}")
             return True
         else:
             print_error(f"Status code: {response.status_code}")
@@ -473,7 +469,7 @@ def test_public_recipe_search():
     try:
         response = requests.get(f"{BASE_URL}/public/recipes")
         if response.status_code == 200:
-            recipes = response.json()
+            recipes = _unwrap(response.json()) or []
             print_success(f"Retrieved {len(recipes)} public recipes")
             return recipes
         else:
@@ -500,12 +496,17 @@ def test_ai_review_recipe(recipe: Dict[str, Any]) -> bool:
         print(f"[DEBUG TEST] ai_review_recipe status: {response.status_code}")
         print(f"[DEBUG TEST] ai_review_recipe text: {response.text}")
         if response.status_code == 200:
-            result = response.json()
+            result = _unwrap(response.json())
             print_success(f"Recipe AI-reviewed: {result}")
-            if not result.get('approved', False):
+            if isinstance(result, dict) and not result.get('approved', False):
                 print_error("AI review did not approve the recipe!")
                 return False
             return True
+        elif response.status_code == 500:
+            # OpenAI API error (e.g., invalid key)
+            print_error(f"AI validation service unavailable (OpenAI 401/config issue): {response.status_code}")
+            print_error("Skipping AI review (recipe will remain unapproved)")
+            return False
         else:
             print_error(f"Status code: {response.status_code}")
             print_error(f"Response: {response.text}")
@@ -515,81 +516,53 @@ def test_ai_review_recipe(recipe: Dict[str, Any]) -> bool:
         return False
 
 
-def run_all_tests():
-    """Run all tests for all endpoints."""
-    print(f"\n{BLUE}{'='*50}")
-    print(f"KitchenMind API Test Suite (Full Endpoints)")
-    print(f"{'='*50}{RESET}\n")
-    results = {}
-
-
-    # Test registration (no OTP), login (with OTP), and public recipe search
-    reg_data = test_register_user()
-    results["register_user"] = reg_data is not None
-
-    login_data = test_login_user()
-    login_otp = input("Enter OTP for login (see server log): ") if login_data else None
-    login_result = test_verify_otp(login_data["email"], login_otp) if login_data and login_otp else None
-    results["login_user"] = login_result is not None
-
-
-    public_recipes = test_public_recipe_search()
-    results["public_recipe_search"] = public_recipes is not None
-
 def test_register_user():
     """Test user registration with OTP."""
-    print_test("Register User (no OTP required)")
+    print_test("Register User (with validation)")
     reg_data = {
         "first_name": "Test",
         "last_name": "User",
-        "email": "testuser_otp@example.com",
-        "phone_number": "1234567890",
-        "password": "testpass123",
-        "role": "trainer"
+        "email": "testuser@example.com",
+        "phone_number": "+919876543210",
+        "password": "TestPass123!@",
+        "role": "user"
     }
     resp = requests.post(f"{BASE_URL}/register", json=reg_data)
     if resp.status_code == 201:
-        print_success("Registration complete, user created (no OTP required)")
-        return reg_data
-    else:
-        print_error(f"Status code: {resp.status_code}")
-        print_error(f"Response: {resp.text}")
-        return None
-
-def test_login_user():
-    """Test login with OTP."""
-    print_test("Login User (with OTP)")
-    login_data = {
-        "email": "testuser_otp@example.com",
-        "password": "testpass123"
-    }
-    resp = requests.post(f"{BASE_URL}/login", json=login_data)
-    if resp.status_code == 200:
-        print_success("Login OTP sent")
-        return login_data
-    else:
-        print_error(f"Status code: {resp.status_code}")
-        print_error(f"Response: {resp.text}")
-        return None
-
-def test_verify_otp(email, otp):
-    """Test OTP verification for registration or login, and extract tokens."""
-    print_test("Verify OTP")
-    data = {"email": email, "otp": otp}
-    resp = requests.post(f"{BASE_URL}/verify-otp", json=data)
-    if resp.status_code == 200:
         result = resp.json()
-        if result.get("status") is True and result.get("access_token"):
-            print_success("OTP verified, user authenticated, tokens received")
-            return result
+        if result.get("status"):
+            print_success(f"Registration complete: {result.get('data', {}).get('email', 'N/A')}")
+            return reg_data
         else:
-            print_error(f"OTP verification failed: {result.get('message')}")
-            print_error(f"Full response: {result}")
+            print_error(f"Registration failed: {result.get('message')}")
             return None
     else:
         print_error(f"Status code: {resp.status_code}")
         print_error(f"Response: {resp.text}")
         return None
+
+
+def test_login_user():
+    """Test user login with OTP."""
+    print_test("Login User (with OTP)")
+    login_data = {
+        "email": "testuser@example.com",
+        "password": "TestPass123!@"
+    }
+    resp = requests.post(f"{BASE_URL}/login", json=login_data)
+    if resp.status_code == 200:
+        result = resp.json()
+        if result.get("status"):
+            print_success(f"Login initiated: {result.get('data', {}).get('email', 'N/A')}")
+            return result.get("data")
+        else:
+            print_error(f"Login failed: {result.get('message')}")
+            return None
+    else:
+        print_error(f"Status code: {resp.status_code}")
+        print_error(f"Response: {resp.text}")
+        return None
+
 
 def test_refresh_token(refresh_token):
     """Test refresh token endpoint."""
@@ -598,7 +571,7 @@ def test_refresh_token(refresh_token):
     resp = requests.post(f"{BASE_URL}/refresh-token", json=data)
     if resp.status_code == 200:
         result = resp.json()
-        if result.get("success") and result.get("data", {}).get("access_token"):
+        if result.get("status") and result.get("data", {}).get("access_token"):
             print_success("Access token refreshed successfully")
             return result["data"]["access_token"]
         else:
@@ -622,6 +595,33 @@ def test_protected_route(access_token):
         print_error(f"Response: {resp.text}")
         return False
 
+
+def test_verify_otp(email, otp):
+    """Test OTP verification."""
+    print_test("Verify OTP")
+    verify_data = {"email": email, "otp": otp}
+    resp = requests.post(f"{BASE_URL}/verify-otp", json=verify_data)
+    if resp.status_code == 200:
+        result = resp.json()
+        if result.get("status"):
+            print_success("OTP verified successfully")
+            return result.get("data")
+        else:
+            print_error(f"OTP verification failed: {result.get('message')}")
+            return None
+    else:
+        print_error(f"Status code: {resp.status_code}")
+        print_error(f"Response: {resp.text}")
+        return None
+
+
+def run_all_tests():
+    """Run all tests for all endpoints."""
+    print(f"\n{BLUE}{'='*50}")
+    print(f"KitchenMind API Test Suite (Full Endpoints)")
+    print(f"{'='*50}{RESET}\n")
+    results = {}
+
     # Health check
     results["health_check"] = test_health_check()
 
@@ -641,7 +641,9 @@ def test_protected_route(access_token):
     if user and 'email' in user:
         get_resp = requests.get(f"{BASE_URL}/user/email/{user['email']}")
         if get_resp.status_code == 200:
-            user = get_resp.json()
+            fetched_user = _unwrap(get_resp.json())
+            if fetched_user:
+                user = fetched_user
             print(f"[DEBUG TEST] user object fetched from DB: {user}")
     if user and 'id' not in user and 'user_id' in user:
         user['id'] = user['user_id']
@@ -677,35 +679,6 @@ def test_protected_route(access_token):
     results["submit_recipe"] = recipe is not None
 
     # Approve recipe so synthesis will succeed
-    def approve_recipe(recipe, validator_id):
-        print_test("Approve Recipe (validate)")
-        if not recipe or not validator_id:
-            print_error("Missing recipe or validator_id for approval")
-            return False
-        validation_data = {"approved": True, "feedback": "Approved for test", "confidence": 0.95}
-        try:
-            response = requests.post(
-                f"{BASE_URL}/recipe/{recipe['id']}/validate",
-                json=validation_data,
-                params={"validator_id": validator_id}
-            )
-            print(f"[DEBUG TEST] approve_recipe status: {response.status_code}")
-            print(f"[DEBUG TEST] approve_recipe text: {response.text}")
-            if response.status_code == 200:
-                print_success("Recipe approved for synthesis test")
-                return True
-            else:
-                print_error(f"Status code: {response.status_code}")
-                print_error(f"Response: {response.text}")
-                return False
-        except Exception as e:
-            print_error(f"Exception in approve_recipe: {e}")
-            return False
-
-    # Create validator role before creating validator user
-        # Validator role removed. No test_create_validator_role needed.
-
-    # Approve recipe so synthesis will succeed
     # If validator approval is only via OpenAI API, always use test_ai_review_recipe.
     if recipe:
         print(f"[DEBUG TEST] recipe object before AI review: {recipe}")
@@ -716,7 +689,7 @@ def test_protected_route(access_token):
         if version_id:
             resp = requests.get(f"{BASE_URL}/recipe/version/{version_id}")
             if resp.status_code == 200:
-                fetched_recipe = resp.json()
+                fetched_recipe = _unwrap(resp.json())
                 print(f"[DEBUG TEST] Recipe approval status after AI review: approved={fetched_recipe.get('approved')}, version_id={version_id}")
             else:
                 print_error(f"[DEBUG] Could not fetch recipe after AI review, status: {resp.status_code}")

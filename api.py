@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, APIRouter
 from typing import List
 from pydantic import BaseModel, EmailStr, constr, validator
 from sqlalchemy.orm import Session
@@ -7,582 +7,128 @@ from Module.database import DietaryPreferenceEnum
 import hashlib
 from Module.token_utils import create_access_token, create_refresh_token, decode_token
 
+# Import router modules so their endpoints register on the shared router
+from Module.routers import auth, public, users, roles, admin, recipes, events
+
 
 app = FastAPI()
+from Module.routers.base import api_router
 STATIC_OTP = "123456"
 
-class RecipeResponse(BaseModel):
-    """Schema for recipe response."""
-    recipe_id: str
-    version_id: str = None
-    title: str
-    servings: int
-    approved: bool
-    popularity: int
-    ingredients: list = []
-    steps: list = []
-
-
-
-# Public recipe search endpoint (no login required, returns up to 2 recipes)
-@app.get("/public/recipes", response_model=List[RecipeResponse])
-def public_recipes(db: Session = Depends(get_db)):
-    recipes = db.query(Recipe).filter(Recipe.is_published == True).limit(2).all()
-    result = []
-    for r in recipes:
-        result.append(RecipeResponse(
-            recipe_id=r.recipe_id,
-            version_id=getattr(r, 'current_version_id', None),
-            title=getattr(r, 'title', getattr(r, 'dish_name', None)),
-            servings=r.servings,
-            approved=getattr(r, 'is_published', False),
-            popularity=getattr(r, 'popularity', 0),
-            ingredients=[{'name': ing.name, 'quantity': ing.quantity, 'unit': ing.unit} for ing in getattr(r, 'ingredients', [])],
-            steps=getattr(r, 'steps', [])
-        ))
-    return {
-        "status": True,
-        "message": "Public recipes fetched successfully.",
-        "data": result
-    }
-# Login request/response schemas
-PasswordStr = constr(min_length=8)
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: PasswordStr
-
-class LoginResponse(BaseModel):
-    email: str
-    message: str
-
-# Login endpoint with OTP
-@app.post("/login")
-def login_user(request: LoginRequest, db: Session = Depends(get_db)):
-    # Find user by email
-    db_user = db.query(User).filter(User.email == request.email).first()
-    password_hash = hashlib.sha256(request.password.encode()).hexdigest()
-    if not db_user or db_user.password_hash != password_hash:
-        return {
-            "status": False,
-            "error": {"code": 401, "message": "Invalid email or password."}
-        }
-    # Store OTP and expiry in DB
-    from datetime import datetime, timedelta
-    db_user.otp_hash = hashlib.sha256(STATIC_OTP.encode()).hexdigest()
-    db_user.otp_expires_at = datetime.utcnow() + timedelta(days=60)
-    db_user.otp_verified = False
-    db.commit()
-    print(f"[OTP] For login {request.email}: {STATIC_OTP}")
-    return {
-        "status": True,
-        "message": "OTP sent to your email. Please verify.",
-        "data": {"email": request.email}
-    }
 from fastapi import status, Request
-import random
-from typing import Optional
-# Temporary in-memory store for OTPs and pending users (for demo)
-# Registration request/response schemas
-from typing import Annotated
-FirstNameStr = constr(strip_whitespace=True, min_length=2, max_length=30)
-LastNameStr = constr(strip_whitespace=True, min_length=2, max_length=30)
-PhoneNumberStr = Annotated[
-    str,
-    constr(
-        strip_whitespace=True,
-        pattern=r'^(?:\+91)?[6-9]\d{9}$'
-    )
-]
-PasswordStr = Annotated[str, constr()]
-RoleStr = Annotated[str, constr(strip_whitespace=True)]
-
-
 from fastapi.responses import JSONResponse
-from fastapi.exception_handlers import RequestValidationError
 from fastapi.exceptions import RequestValidationError
-
-from fastapi.exception_handlers import request_validation_exception_handler
 
 @app.exception_handler(RequestValidationError)
 async def custom_validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = exc.errors()
+    
+    # Priority 1: Check query parameters (like trainer_id) first
     for err in errors:
-        loc = err.get("loc", [None, None])
+        loc = err.get("loc", [])
+        if len(loc) > 0 and loc[0] == "query":
+            field_name = loc[-1] if loc else None
+            msg = err.get("msg", "")
+            if field_name == "trainer_id":
+                return JSONResponse(status_code=422, content={"status": False, "message": "Invalid trainer ID format. Please provide a valid user identifier."})
+    
+    # Priority 2: Check body fields
+    for err in errors:
+        loc = err.get("loc", [])
         msg = err.get("msg", "")
+        err_type = err.get("type", "")
+        
+        # Skip query params (already handled above)
+        if len(loc) > 0 and loc[0] == "query":
+            continue
+        
+        # Recipe field errors - check by field name in location path
+        field_name = loc[-1] if loc else None
+        
+        # Quantity validation
+        if field_name == "quantity" and ("greater than" in msg or err_type == "greater_than"):
+            return JSONResponse(status_code=422, content={"status": False, "message": "Ingredient quantity must be greater than 0."})
+        
+        # Servings validation
+        if field_name == "servings" and ("greater than" in msg or err_type == "greater_than_equal"):
+            return JSONResponse(status_code=422, content={"status": False, "message": "Servings must be between 1 and 100."})
+        
+        # Title validation
+        if field_name == "title":
+            if "at least 3" in msg or err_type == "string_too_short":
+                return JSONResponse(status_code=422, content={"status": False, "message": "Recipe title must be at least 3 characters long."})
+            clean_msg = msg.replace("Value error, ", "").strip()
+            return JSONResponse(status_code=422, content={"status": False, "message": clean_msg})
+        
+        # Steps validation
+        if field_name == "steps":
+            if "at least 1" in msg or err_type == "too_short":
+                return JSONResponse(status_code=422, content={"status": False, "message": "At least one cooking step is required."})
+            clean_msg = msg.replace("Value error, ", "").strip()
+            return JSONResponse(status_code=422, content={"status": False, "message": clean_msg})
+        
+        # Ingredients validation
+        if field_name == "ingredients":
+            if "at least 1" in msg or err_type == "too_short":
+                return JSONResponse(status_code=422, content={"status": False, "message": "At least one ingredient is required."})
+        
+        # Ingredient name/unit validation
+        if field_name in ["name", "unit"] and "ingredients" in str(loc):
+            clean_msg = msg.replace("Value error, ", "").strip()
+            return JSONResponse(status_code=422, content={"status": False, "message": clean_msg})
+        
         # First name errors
-        if loc[1] == "first_name":
+        if field_name == "first_name":
             if "First name may only contain letters, spaces, hyphens, or apostrophes." in msg:
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "status": False,
-                        "error": {"code": 422, "msg": "First name may only contain letters, spaces, hyphens, or apostrophes."}
-                    },
-                )
-            if err.get("type") == "string_too_short":
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "status": False,
-                        "error": {"code": 422, "msg": "First name must be at least 2 characters."}
-                    },
-                )
+                return JSONResponse(status_code=422, content={"status": False, "message": "First name may only contain letters, spaces, hyphens, or apostrophes."})
+            if err_type == "string_too_short":
+                return JSONResponse(status_code=422, content={"status": False, "message": "First name must be at least 2 characters."})
+        
         # Last name errors
-        if loc[1] == "last_name":
+        if field_name == "last_name":
             if "Last name may only contain letters, spaces, hyphens, or apostrophes." in msg:
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "status": False,
-                        "error": {"code": 422, "msg": "Last name may only contain letters, spaces, hyphens, or apostrophes."}
-                    },
-                )
-            if err.get("type") == "string_too_short":
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "status": False,
-                        "error": {"code": 422, "msg": "Last name must be at least 2 characters."}
-                    },
-                )
+                return JSONResponse(status_code=422, content={"status": False, "message": "Last name may only contain letters, spaces, hyphens, or apostrophes."})
+            if err_type == "string_too_short":
+                return JSONResponse(status_code=422, content={"status": False, "message": "Last name must be at least 2 characters."})
+        
         # Email errors
-        if loc[1] == "email":
-            if (
-                "value is not a valid email address" in msg
-                or "An email address must have an @-sign." in msg
-                or "email address" in msg
-            ):
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "status": False,
-                        "error": {"code": 422, "msg": "Email must be a valid email address (e.g., user@example.com)."}
-                    },
-                )
+        if field_name == "email":
+            if ("value is not a valid email address" in msg or "An email address must have an @-sign." in msg or "email address" in msg):
+                return JSONResponse(status_code=422, content={"status": False, "message": "Email must be a valid email address (e.g., user@example.com)."})
+        
         # Phone number errors
-        if loc[1] == "phone_number":
-            if (
-                "Phone number must be a valid Indian mobile number" in msg
-                or "string does not match regex" in msg
-                or "ensure this value has at least" in msg
-                or "ensure this value has at most" in msg
-            ):
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "status": False,
-                        "error": {"code": 422, "msg": "Phone number must be a valid Indian mobile number (10 digits, may start with +91, and must start with 6-9)."}
-                    },
-                )
+        if field_name == "phone_number":
+            if ("Phone number must be a valid Indian mobile number" in msg or "string does not match regex" in msg or "ensure this value has at least" in msg or "ensure this value has at most" in msg):
+                return JSONResponse(status_code=422, content={"status": False, "message": "Phone number must be a valid Indian mobile number (10 digits, may start with +91, and must start with 6-9)."})
+        
         # Password errors
-        if loc[1] == "password":
-            if (
-                "Password must be 8-128 characters" in msg
-                or "Password must be at least 8 characters" in msg
-                or "Password must be a string." in msg
-                or "Password is too common" in msg
-            ):
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "status": False,
-                        "error": {"code": 422, "msg": "Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a digit, and a special character."}
-                    },
-                )
+        if field_name == "password":
+            if ("Password must be 8-128 characters" in msg or "Password must be at least 8 characters" in msg or "Password must be a string." in msg or "Password is too common" in msg or "String should have at least" in msg):
+                return JSONResponse(status_code=422, content={"status": False, "message": "Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a digit, and a special character."})
+        
         # Role errors
-        if loc[1] == "role":
-            if (
-                "Role must be one of: user, trainer, admin." in msg
-            ):
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "status": False,
-                        "error": {"code": 422, "msg": "Role must be one of: user, trainer, admin."}
-                    },
-                )
-    # Fallback: return the first error in a user-friendly format
+        if field_name == "role":
+            if ("Role must be one of: user, trainer, admin." in msg):
+                return JSONResponse(status_code=422, content={"status": False, "message": "Role must be one of: user, trainer, admin."})
+        
+        # User ID / Trainer ID errors
+        if field_name in ["user_id", "trainer_id"]:
+            clean_msg = msg.replace("Value error, ", "").strip()
+            if not clean_msg or "badly formed" in msg.lower() or "invalid" in msg.lower():
+                return JSONResponse(status_code=422, content={"status": False, "message": "Invalid user ID format. Please provide a valid user identifier."})
+            return JSONResponse(status_code=422, content={"status": False, "message": clean_msg})
+    
+    # Fallback - clean "Value error, " prefix from any validation message
     if errors:
         err = errors[0]
-        msg = err.get("msg", "Invalid input.")
-        return JSONResponse(
-            status_code=422,
-            content={
-                "status": False,
-                "error": {
-                    "code": 422,
-                    "msg": msg
-                }
-            },
-        )
-    return JSONResponse(
-        status_code=422,
-        content={
-            "status": False,
-            "error": {
-                "code": 422,
-                "msg": "Invalid input. Please check your data and try again."
-            }
-        },
-    )
-
-class RegisterResponse(BaseModel):
-    email: str
-    message: str
-    status: bool
-
-from typing import Annotated
-
-class OTPVerifyRequest(BaseModel):
-    email: EmailStr
-    otp: Annotated[
-        str,
-        constr(strip_whitespace=True, min_length=6, max_length=6, pattern=r'^\d{6}$')
-    ]
-
-class OTPVerifyResponse(BaseModel):
-    status: bool
-    message: str
-    data: dict
+        msg = err.get("msg", "Invalid input.").replace("Value error, ", "").strip()
+        return JSONResponse(status_code=422, content={"status": False, "message": msg})
+    return JSONResponse(status_code=422, content={"status": False, "message": "Invalid input. Please check your data and try again."})
 
 
-# RegisterRequest: single source of truth for registration validation
-class RegisterRequest(BaseModel):
-    @validator('first_name')
-    def validate_first_name_pattern(cls, v):
-        import re
-        pattern = r"^[A-Za-z\s'-]+$"
-        if not re.match(pattern, v):
-            raise ValueError("First name may only contain letters, spaces, hyphens, or apostrophes.")
-        return v
 
-    @validator('last_name')
-    def validate_last_name_pattern(cls, v):
-        import re
-        pattern = r"^[A-Za-z\s'-]+$"
-        if not re.match(pattern, v):
-            raise ValueError("Last name may only contain letters, spaces, hyphens, or apostrophes.")
-        return v
+# Models and endpoints moved to Module/routers/*.py
 
-    @validator('phone_number')
-    def validate_phone_number(cls, v):
-        import re
-        pattern = r'^(?:\+91)?[6-9]\d{9}$'
-        if not re.match(pattern, v):
-            raise ValueError("Phone number must be a valid Indian mobile number (10 digits, may start with +91, and must start with 6-9).")
-        return v
-
-    @validator('password', pre=True, always=True)
-    def validate_password(cls, v):
-        import re
-        if not isinstance(v, str):
-            raise ValueError("Password must be a string.")
-        if len(v) < 8 or len(v) > 128:
-            raise ValueError("Password must be 8-128 characters, include uppercase, lowercase, digit, and special character.")
-        pattern = r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$'
-        if not re.match(pattern, v):
-            raise ValueError("Password must be 8-128 characters, include uppercase, lowercase, digit, and special character.")
-        common_passwords = {"password", "123456", "12345678", "qwerty", "abc123", "111111", "123123", "letmein", "welcome", "admin", "iloveyou", "monkey", "login", "passw0rd", "starwars"}
-        if v.lower() in common_passwords:
-            raise ValueError("Password is too common. Please choose a stronger password.")
-        return v
-
-    @validator('role')
-    def role_must_be_valid(cls, v):
-        allowed = {"user", "trainer", "admin"}
-        v_norm = v.lower().strip() if isinstance(v, str) else v
-        if v_norm not in allowed:
-            raise ValueError("Role must be one of: user, trainer, admin.")
-        return v_norm
-
-    first_name: FirstNameStr
-    last_name: LastNameStr
-    email: EmailStr
-    phone_number: PhoneNumberStr
-    password: str
-    role: RoleStr
-
-# Registration endpoint (no OTP)
-
-@app.post("/register", status_code=status.HTTP_201_CREATED)
-def register_user(request: RegisterRequest, db: Session = Depends(get_db)):
-    print("[DEBUG] register_user endpoint called with:", request)
-    # Check for duplicate email or phone
-    existing_user = db.query(User).filter(User.email == request.email).first()
-    if existing_user:
-        return {
-            "status": False,
-            "error": {"code": 409, "message": "User already exists."}
-        }
-    # All field validation is handled by Pydantic. No redundant checks here.
-
-    import uuid
-    from datetime import datetime
-    from sqlalchemy.exc import IntegrityError
-    user_id = str(uuid.uuid4())  # Generate a unique user ID
-    db_user = User(
-        user_id=user_id,
-        name=f"{request.first_name} {request.last_name}",
-        email=request.email,
-        login_identifier=request.email,
-        password_hash=hashlib.sha256(request.password.encode()).hexdigest(),
-        auth_type="email",
-        role_id=request.role,
-        phone_number=request.phone_number,
-        dietary_preference=None,
-        rating_score=0.0,
-        credit=0.0,
-        created_at=datetime.utcnow(),
-        last_login_at=datetime.utcnow()
-    )
-    db.add(db_user)
-    try:
-        db.commit()
-        db.refresh(db_user)
-    except IntegrityError as e:
-        db.rollback()
-        # Check for foreign key violation on role_id
-        if "user_role_id_fkey" in str(e.orig):
-            return {
-                "status": False,
-                "error": {"code": 422, "message": "Role must be one of: user, trainer, admin."}
-            }
-        raise
-    return {
-        "status": True,
-        "message": "Registration complete. User created.",
-        "data": {"email": request.email}
-    }
-
-@app.post("/verify-otp")
-def verify_otp(request: OTPVerifyRequest, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == request.email).first()
-    otp_hash = hashlib.sha256(request.otp.encode()).hexdigest()
-    if not db_user or db_user.otp_hash != otp_hash:
-        return {
-            "status": False,
-            "error": {"code": 401, "message": "Invalid or expired OTP."}
-        }
-    from datetime import timezone
-    if db_user.otp_expires_at and db_user.otp_expires_at < datetime.now(timezone.utc):
-        return {
-            "status": False,
-            "error": {"code": 401, "message": "OTP expired."}
-        }
-    db_user.otp_verified = True
-    db.commit()
-    # Split name into first and last (if possible)
-    name_parts = db_user.name.split(" ", 1)
-    first_name = name_parts[0]
-    last_name = name_parts[1] if len(name_parts) > 1 else ""
-    payload = {"user_id": db_user.user_id, "role": db_user.role_id, "email": db_user.email}
-    access_token = create_access_token(payload)
-    refresh_token = create_refresh_token(payload)
-    user_data = {
-        "user_id": db_user.user_id,
-        "first_name": first_name,
-        "last_name": last_name,
-        "email": db_user.email,
-        "phone_number": getattr(db_user, "phone_number", ""),
-        "role": db_user.role_id,
-        "access_token": access_token,
-        "refresh_token": refresh_token
-    }
-    return {
-        "status": True,
-        "message": "Welcome! You've successfully logged in.",
-        "data": user_data
-    }
-
-# Add refresh token endpoint
-from fastapi import HTTPException
-from fastapi import Request
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
-
-@app.post("/refresh-token")
-def refresh_token_endpoint(request: RefreshRequest):
-    try:
-        payload = decode_token(request.refresh_token)
-        new_access_token = create_access_token({"user_id": payload["user_id"], "role": payload["role"], "email": payload["email"]})
-        return {
-            "status": True,
-            "message": "Token refreshed",
-            "data": {"access_token": new_access_token}
-        }
-    except Exception as e:
-        return {
-            "status": False,
-            "error": {"code": 401, "message": str(e)}
-        }
-
-# Dependency for protected routes
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-security = HTTPBearer()
-
-def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    try:
-        payload = decode_token(credentials.credentials)
-        return payload
-    except Exception as e:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-# Example protected route
-@app.get("/protected")
-def protected_route(user=Depends(get_current_user)):
-    return {
-        "status": True,
-        "message": "You are authenticated",
-        "data": {"user": user}
-    }
-
-# PATCH endpoint to update user fields (including admin_action_* fields)
-from fastapi import Body, Depends
-from typing import Any
-from pydantic import BaseModel
-
-
-class UserUpdate(BaseModel):
-    name: str = None
-    email: str = None
-    login_identifier: str = None
-    password_hash: str = None
-    auth_type: str = None
-    role_id: str = None
-    dietary_preference: str = None
-    rating_score: float = None
-    credit: float = None
-    last_login_at: str = None
-    is_super_admin: bool = None
-    created_by: str = None
-    admin_action_type: str = None
-    admin_action_target_type: str = None
-    admin_action_target_id: str = None
-    admin_action_description: str = None
-    admin_action_created_at: str = None
-
-# Import get_db and related models early so they are available for endpoints
-from Module.database import get_db, init_db, Recipe, Role, User
-from Module.database import DietaryPreferenceEnum
-
-# UserResponse must be defined before any endpoint that uses it
-class UserResponse(BaseModel):
-    user_id: str
-    name: str
-    email: str
-    login_identifier: str
-    role_id: str
-    dietary_preference: Optional[str] = None
-    rating_score: float
-    credit: float
-    created_at: str = None
-    last_login_at: str = None
-    name: Optional[str] = None
-    email: Optional[str] = None
-    login_identifier: Optional[str] = None
-    password_hash: Optional[str] = None
-    auth_type: Optional[str] = None
-    role_id: Optional[str] = None
-    dietary_preference: Optional[str] = None
-    rating_score: Optional[float] = None
-    credit: Optional[float] = None
-    last_login_at: Optional[str] = None
-    is_super_admin: Optional[bool] = None
-    created_by: Optional[str] = None
-    admin_action_type: Optional[str] = None
-    admin_action_target_type: Optional[str] = None
-    admin_action_target_id: Optional[str] = None
-    admin_action_description: Optional[str] = None
-    admin_action_created_at: Optional[str] = None
-
-class UserUpdate(BaseModel):
-    name: Optional[str] = None
-    email: Optional[str] = None
-    login_identifier: Optional[str] = None
-    password_hash: Optional[str] = None
-    auth_type: Optional[str] = None
-    role_id: Optional[str] = None
-    dietary_preference: Optional[str] = None
-    rating_score: Optional[float] = None
-    credit: Optional[float] = None
-    last_login_at: Optional[str] = None
-    is_super_admin: Optional[bool] = None
-    created_by: Optional[str] = None
-    admin_action_type: Optional[str] = None
-    admin_action_target_type: Optional[str] = None
-    admin_action_target_id: Optional[str] = None
-    admin_action_description: Optional[str] = None
-    admin_action_created_at: Optional[str] = None
-
-# UserResponse must be defined before any endpoint that uses it
-class UserResponse(BaseModel):
-    user_id: str
-    name: str
-    email: str
-    login_identifier: str
-    role_id: str
-    dietary_preference: str
-    rating_score: float
-    credit: float
-    created_at: str = None
-    last_login_at: str = None
-    name: Optional[str] = None
-    email: Optional[str] = None
-    login_identifier: Optional[str] = None
-    password_hash: Optional[str] = None
-    auth_type: Optional[str] = None
-    role_id: Optional[str] = None
-    dietary_preference: Optional[str] = None
-    rating_score: Optional[float] = None
-    credit: Optional[float] = None
-    last_login_at: Optional[str] = None
-    is_super_admin: Optional[bool] = None
-    created_by: Optional[str] = None
-    admin_action_type: Optional[str] = None
-    admin_action_target_type: Optional[str] = None
-    admin_action_target_id: Optional[str] = None
-    admin_action_description: Optional[str] = None
-    admin_action_created_at: Optional[str] = None
-
-@app.patch("/user/{user_id}", response_model=UserResponse)
-def update_user(user_id: str, user_update: UserUpdate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.user_id == user_id).first()
-    if not user:
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "User not found"}
-        }
-    update_data = user_update.dict(exclude_unset=True)
-    for field, value in update_data.items():
-        if field == "dietary_preference" and value is not None:
-            try:
-                value = DietaryPreferenceEnum[value] if value in DietaryPreferenceEnum.__members__ else DietaryPreferenceEnum(value)
-            except Exception:
-                return {
-                    "status": False,
-                    "error": {"code": 400, "message": f"Invalid dietary_preference: {value}"}
-                }
-        setattr(user, field, value)
-    db.commit()
-    db.refresh(user)
-    return {
-        "status": True,
-        "message": "User updated successfully.",
-        "data": UserResponse(
-            user_id=user.user_id,
-            name=user.name,
-            email=user.email,
-            login_identifier=user.login_identifier,
-            role_id=user.role_id,
-            dietary_preference=user.dietary_preference.value if user.dietary_preference else None,
-            rating_score=user.rating_score,
-            credit=user.credit,
-            created_at=str(user.created_at) if user.created_at else None,
-            last_login_at=str(user.last_login_at) if user.last_login_at else None
-        )
-    }
 """
 FastAPI application for KitchenMind recipe synthesis system.
 Provides REST API for recipe management, synthesis, and event planning.
@@ -605,155 +151,9 @@ from Module.repository_postgres import PostgresRecipeRepository
 from Module.controller import KitchenMind
 from Module.vector_store import MockVectorStore
 from Module.scoring import ScoringEngine
-# Admin Profile and Session Endpoints
-# (The following code was incorrectly indented and placed outside any function or class. 
-# If you need to implement admin profile creation, please define it inside an endpoint or function.)
 
-# Admin Profile and Action Log Endpoints
-from Module.models import AdminProfile
-
-
-
-class AdminProfileCreate(BaseModel):
-    name: str
-    email: str
-
-class AdminProfileResponse(BaseModel):
-    admin_id: str
-    name: str
-    email: str
-    created_at: str
-
-
-
-
-
-from sqlalchemy.orm import Session as OrmSession
-from sqlalchemy import exists
-from Module.database import User
-
-@app.post("/admin_profiles", response_model=AdminProfileResponse)
-def create_admin_profile(profile: AdminProfileCreate, db: OrmSession = Depends(get_db)):
-    import uuid
-    from datetime import datetime
-    # Check if email already exists
-    exists_query = db.query(exists().where(User.email == profile.email)).scalar()
-    if exists_query:
-        return {
-            "status": False,
-            "error": {"code": 409, "message": "Admin with this email already exists"}
-        }
-    admin_id = str(uuid.uuid4())
-    created_at = datetime.utcnow()
-    db_admin = User(
-        user_id=admin_id,
-        name=profile.name,
-        email=profile.email,
-        login_identifier=profile.email,
-        password_hash="",  # Set empty or handle securely
-        auth_type="admin",
-        role_id="admin",
-        dietary_preference=None,
-        rating_score=0.0,
-        credit=0.0,
-        created_at=created_at,
-        last_login_at=created_at,
-        is_super_admin=True
-    )
-    db.add(db_admin)
-    db.commit()
-    db.refresh(db_admin)
-    return {
-        "status": True,
-        "message": "Admin profile created successfully.",
-        "data": AdminProfileResponse(
-            admin_id=db_admin.user_id,
-            name=db_admin.name,
-            email=db_admin.email,
-            created_at=str(db_admin.created_at)
-        )
-    }
-
-
-@app.get("/admin_profiles/{admin_id}", response_model=AdminProfileResponse)
-def get_admin_profile(admin_id: str, db: OrmSession = Depends(get_db)):
-    admin = db.query(User).filter(User.user_id == admin_id, User.role_id == "admin").first()
-    if not admin:
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "Admin profile not found"}
-        }
-    return {
-        "status": True,
-        "message": "Admin profile fetched successfully.",
-        "data": AdminProfileResponse(
-            admin_id=admin.user_id,
-            name=admin.name,
-            email=admin.email,
-            created_at=str(admin.created_at)
-        )
-    }
-
-
-from sqlalchemy.orm import Session as OrmSession
-
-
-class SessionCreate(BaseModel):
-    user_id: str
-
-class SessionResponse(BaseModel):
-    session_id: str
-    user_id: str
-    created_at: str
-
-from fastapi import Request
-
-@app.post("/session", response_model=SessionResponse)
-def create_session(session: SessionCreate, db: Session = Depends(get_db), request: Request = None):
-    print(f"[DEBUG] create_session called with: {session}")
-    # Check if user exists
-    user = db.query(User).filter(User.user_id == session.user_id).first()
-    print(f"[DEBUG] User lookup for session: {user}")
-    if not user:
-        print(f"[DEBUG] User not found for session: {session.user_id}")
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "User not found"}
-        }
-    from Module.database import Session as DBSession
-    import uuid
-    from datetime import datetime, timedelta
-    now = datetime.utcnow()
-    user_agent = None
-    ip_address = None
-    if request is not None:
-        user_agent = request.headers.get("user-agent")
-        ip_address = request.headers.get("x-forwarded-for")
-        if not ip_address and request.client:
-            ip_address = request.client.host
-    expires_at = now + timedelta(hours=1)
-    db_session = DBSession(
-        session_id=str(uuid.uuid4()),
-        user_id=session.user_id,
-        created_at=now,
-        expires_at=expires_at,
-        is_active=True,
-        ip_address=ip_address,
-        user_agent=user_agent
-    )
-    db.add(db_session)
-    db.commit()
-    db.refresh(db_session)
-    print(f"[DEBUG] Session created: {db_session.session_id} for user: {db_session.user_id}")
-    return {
-        "status": True,
-        "message": "Session created successfully.",
-        "data": SessionResponse(
-            session_id=db_session.session_id,
-            user_id=db_session.user_id,
-            created_at=str(db_session.created_at)
-        )
-    }
+# Global state (in production, use dependency injection)
+km_instance = None
 
 # Add CORS middleware
 app.add_middleware(
@@ -763,204 +163,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Global state (in production, use dependency injection)
-km_instance = None
-
-
-# ============================================================================
-# Pydantic Models (Request/Response Schemas)
-# ============================================================================
-
-class IngredientCreate(BaseModel):
-    """Schema for creating an ingredient."""
-    name: str
-    quantity: float
-    unit: str
-
-
-class RecipeCreate(BaseModel):
-    """Schema for creating a recipe."""
-    title: str
-    ingredients: List[IngredientCreate]
-    steps: List[str]
-    servings: int
-
-
-class RecipeResponse(BaseModel):
-    """Schema for recipe response."""
-    recipe_id: str
-    version_id: str = None
-    title: str
-    servings: int
-    approved: bool
-    popularity: int
-    # avg_rating removed from model
-    ingredients: list = []
-    steps: list = []
-
-
-
-class UserCreate(BaseModel):
-    """Schema for creating a user (new schema)."""
-    name: str
-    email: str
-    login_identifier: str
-    password_hash: str
-    auth_type: str
-    role_id: str
-    dietary_preference: str
-
-
-
-class UserResponse(BaseModel):
-    user_id: str
-    name: str
-    email: str
-    login_identifier: str
-    role_id: str
-    dietary_preference: str
-    rating_score: float
-    credit: float
-    created_at: str = None
-    last_login_at: str = None
-# ============================================================================
-# Role Management Endpoints
-# ============================================================================
-
-class RoleCreate(BaseModel):
-    role_id: str
-    role_name: str
-    description: str = None
-
-class RoleResponse(BaseModel):
-    role_id: str
-    role_name: str
-    description: str = None
-
-# Fetch a role by role_id
-@app.get("/roles/{role_id}", response_model=RoleResponse)
-def get_role(role_id: str, db: Session = Depends(get_db)):
-    db_role = db.query(Role).filter(Role.role_id == role_id).first()
-    if not db_role:
-        return {
-            "status": False,
-            "error": {"code": 404, "message": f"Role '{role_id}' not found."}
-        }
-    return {
-        "status": True,
-        "message": "Role fetched successfully.",
-        "data": RoleResponse(
-            role_id=db_role.role_id,
-            role_name=db_role.role_name,
-            description=db_role.description
-        )
-    }
-
-# Fetch a user by email
-@app.get("/user/email/{email}", response_model=UserResponse)
-def get_user_by_email(email: str, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == email).first()
-    if not db_user:
-        return {
-            "status": False,
-            "error": {"code": 404, "message": f"User with email '{email}' not found."}
-        }
-    return {
-        "status": True,
-        "message": "User fetched successfully.",
-        "data": UserResponse(
-            user_id=db_user.user_id,
-            name=db_user.name,
-            email=db_user.email,
-            login_identifier=db_user.login_identifier,
-            role_id=db_user.role_id,
-            dietary_preference=db_user.dietary_preference.value if db_user.dietary_preference else None,
-            rating_score=db_user.rating_score,
-            credit=db_user.credit,
-            created_at=str(db_user.created_at) if db_user.created_at else None,
-            last_login_at=str(db_user.last_login_at) if db_user.last_login_at else None
-        )
-    }
-
-@app.post("/roles", response_model=RoleResponse)
-def create_role(role: RoleCreate, db: Session = Depends(get_db)):
-    existing = db.query(Role).filter(Role.role_id == role.role_id).first()
-    if existing:
-        return {
-            "status": False,
-            "error": {"code": 409, "message": f"Role with role_id '{role.role_id}' already exists."}
-        }
-    db_role = Role(
-        role_id=role.role_id,
-        role_name=role.role_name,
-        description=role.description
-    )
-    db.add(db_role)
-    db.commit()
-    db.refresh(db_role)
-    return {
-        "status": True,
-        "message": "Role created successfully.",
-        "data": RoleResponse(
-            role_id=db_role.role_id,
-            role_name=db_role.role_name,
-            description=db_role.description
-        )
-    }
-
-@app.get("/roles", response_model=list[RoleResponse])
-def list_roles(db: Session = Depends(get_db)):
-    roles = db.query(Role).all()
-    return {
-        "status": True,
-        "message": "Roles fetched successfully.",
-        "data": [RoleResponse(role_id=r.role_id, role_name=r.role_name, description=r.description) for r in roles]
-    }
-
-
-class RecipeSynthesisRequest(BaseModel):
-    """Schema for recipe synthesis request."""
-    dish_name: str
-    servings: int = 2
-    ingredients: Optional[List[IngredientCreate]] = None
-    steps: Optional[List[str]] = None
-
-
-class RecipeValidationRequest(BaseModel):
-    """Schema for recipe validation."""
-    approved: bool
-    feedback: Optional[str] = None
-    confidence: float = 0.8
-
-
-class EventPlanResponse(BaseModel):
-    event: str
-    user_id: str
-    guest_count: int
-    budget_per_person: float
-    dietary: Optional[str] = None
-
-class EventPlanRequest(BaseModel):
-    """Schema for event planning request."""
-    user_id: str
-    event_name: str
-    guest_count: int
-    budget_per_person: float
-    dietary: Optional[str] = None
-
-@app.post("/event/plan", response_model=EventPlanResponse)
-def plan_event(request: EventPlanRequest):
-    """Plan an event and return details."""
-    # Here you can add logic to store or process the event
-    return EventPlanResponse(
-        event=request.event_name,
-        user_id=request.user_id,
-        guest_count=request.guest_count,
-        budget_per_person=request.budget_per_person,
-        dietary=request.dietary
-    )
-
 
 # ============================================================================
 # Startup and Shutdown Events
@@ -1002,493 +204,19 @@ def health_check():
 
 
 # ============================================================================
-# User Management Endpoints
-# ============================================================================
-
-
-
-
-
-
-@app.get("/user/{user_id}", response_model=UserResponse)
-def get_user(user_id: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.user_id == user_id).first()
-    if not user:
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "User not found"}
-        }
-    return {
-        "status": True,
-        "message": "User fetched successfully.",
-        "data": UserResponse(
-            user_id=user.user_id,
-            name=user.name,
-            email=user.email,
-            login_identifier=user.login_identifier,
-            role_id=user.role_id,
-            dietary_preference=user.dietary_preference,
-            rating_score=user.rating_score,
-            credit=user.credit,
-            created_at=str(user.created_at) if user.created_at else None,
-            last_login_at=str(user.last_login_at) if user.last_login_at else None
-        )
-    }
-
-
-# ============================================================================
-# Recipe Management Endpoints
-# ============================================================================
-
-@app.post("/recipe", response_model=RecipeResponse)
-def submit_recipe(
-    recipe: RecipeCreate,
-    trainer_id: str = Query(...),
-    db: Session = Depends(get_db)
-):
-    """Submit a new recipe (trainer only)."""
-    print("[DEBUG] ENTER submit_recipe endpoint")
-    print(f"[DEBUG] incoming recipe: {recipe}")
-    print(f"[DEBUG] incoming trainer_id: {trainer_id}")
-    print(f"[DEBUG] trainer_id: {trainer_id}")
-    print(f"[DEBUG] recipe: {recipe}")
-    trainer = db.query(User).filter(User.user_id == trainer_id).first()
-    print(f"[DEBUG] trainer: {trainer}")
-    if not trainer:
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "Trainer not found"}
-        }
-
-    print(f"[DEBUG] trainer.role: {trainer.role}, type: {type(trainer.role)}")
-    trainer_role = trainer.role
-    if hasattr(trainer_role, 'role_id'):
-        trainer_role = trainer_role.role_id
-    elif hasattr(trainer_role, 'value'):
-        trainer_role = trainer_role.value
-    print(f"[DEBUG] normalized trainer_role: {trainer_role}")
-    if str(trainer_role).lower() not in ["trainer", "admin"]:
-        return {
-            "status": False,
-            "error": {"code": 403, "message": "Only trainers can submit recipes"}
-        }
-
-    from pydantic import parse_obj_as
-    if recipe.ingredients and isinstance(recipe.ingredients[0], dict):
-        ingredients_obj = parse_obj_as(List[IngredientCreate], recipe.ingredients)
-    else:
-        ingredients_obj = recipe.ingredients
-
-    try:
-        postgres_repo = PostgresRecipeRepository(db)
-        print(f"[DEBUG] PostgresRecipeRepository created: {postgres_repo}")
-        recipe_obj = postgres_repo.create_recipe(
-            title=recipe.title,
-            ingredients=ingredients_obj,
-            steps=recipe.steps,
-            servings=recipe.servings,
-            submitted_by=trainer.user_id
-        )
-        print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
-        print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
-        try:
-            from Module.models import Recipe, Ingredient
-            mem_recipe = Recipe(
-                recipe_id=recipe_obj.id,
-                title=recipe_obj.title,
-                ingredients=[Ingredient(name=ing.name, quantity=ing.quantity, unit=ing.unit) for ing in recipe_obj.ingredients],
-                steps=recipe_obj.steps,
-                servings=recipe_obj.servings,
-                metadata=getattr(recipe_obj, 'metadata', {}),
-                ratings=getattr(recipe_obj, 'ratings', []),
-                validator_confidence=getattr(recipe_obj, 'validator_confidence', 0.0),
-                popularity=getattr(recipe_obj, 'popularity', 0),
-                approved=recipe_obj.approved,
-                rejection_suggestions=getattr(recipe_obj, 'rejection_suggestions', [])
-            )
-            km_instance.recipes.add(mem_recipe)
-            km_instance.vstore.index(mem_recipe)
-            print(f"[DEBUG] Synced recipe to in-memory store: {mem_recipe.id}")
-        except Exception as sync_e:
-            print(f"[ERROR] Failed to sync recipe to in-memory store: {sync_e}")
-        version_id = None
-        from Module.database import Recipe as DBRecipe
-        db_recipe = db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
-        if db_recipe and hasattr(db_recipe, 'current_version_id'):
-            version_id = db_recipe.current_version_id
-        response = RecipeResponse(
-            recipe_id=recipe_obj.id,
-            version_id=version_id,
-            title=recipe_obj.title,
-            servings=recipe_obj.servings,
-            approved=recipe_obj.approved,
-            popularity=getattr(recipe_obj, 'popularity', 0),
-            ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
-            steps=getattr(recipe_obj, 'steps', [])
-        )
-        print(f"[DEBUG] RecipeResponse: {response}")
-        return {
-            "status": True,
-            "message": "Recipe submitted successfully.",
-            "data": response
-        }
-    except Exception as e:
-        print(f"[ERROR] submit_recipe exception: {e}")
-        return {
-            "status": False,
-            "error": {"code": 400, "message": str(e)}
-        }
-
-
-@app.get("/recipes", response_model=List[RecipeResponse])
-def list_recipes(
-    approved_only: bool = Query(True),
-    db: Session = Depends(get_db)
-):
-    """List recipes, optionally filtering by approval status."""
-    postgres_repo = PostgresRecipeRepository(db)
-    recipes = postgres_repo.approved() if approved_only else postgres_repo.list()
-    response = []
-    for r in recipes:
-        version_id = None
-        from Module.database import Recipe as DBRecipe
-        db_recipe = db.query(DBRecipe).filter(DBRecipe.recipe_id == r.id).first()
-        if db_recipe and hasattr(db_recipe, 'current_version_id'):
-            version_id = db_recipe.current_version_id
-        response.append(RecipeResponse(
-            recipe_id=r.id,
-            version_id=version_id,
-            title=r.title,
-            servings=r.servings,
-            approved=r.approved,
-            popularity=getattr(r, "popularity", 0),
-            ingredients=[i for i in getattr(r, 'ingredients', [])],
-            steps=[s for s in getattr(r, 'steps', [])]
-        ))
-    print(f"[DEBUG] list_recipes response: {response}")
-    return {
-        "status": True,
-        "message": "Recipes fetched successfully.",
-        "data": response
-    }
-
-
-# ============================================================================
-# Recipe Synthesis Endpoints
-# ============================================================================
-
-@app.post("/recipe/synthesize", response_model=RecipeResponse)
-def synthesize_recipe(
-    request: RecipeSynthesisRequest,
-    user_id: str = Query(...),
-    db: Session = Depends(get_db)
-):
-    """Synthesize multiple recipes into one."""
-    print(f"[DEBUG] synthesize_recipe called with user_id: {user_id}, request: {request}")
-    # Fetch user from the database
-    from Module.database import User as DBUser
-    user = db.query(DBUser).filter(DBUser.user_id == user_id).first()
-    print(f"[DEBUG] user: {user}")
-    print(f"[DEBUG] user_id: {user.user_id}, credit: {getattr(user, 'credit', None)}")
-    if not user:
-        print("[ERROR] User not found")
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "No user found with the provided user ID. Please check and try again."}
-        }
-
-    try:
-            # Synthesize recipe using controller, then save using repository
-            # Use keyword arguments to avoid too many positional arguments
-            kwargs = {
-                'user': user,
-                'dish_name': request.dish_name,
-                'servings': request.servings
-            }
-            if request.ingredients is not None:
-                kwargs['ingredients'] = request.ingredients
-            result = km_instance.request_recipe(**kwargs)
-            print(f"[DEBUG] Before ensure_recipe_dataclass: type={type(result)}, dir={dir(result)}, repr={repr(result)}")
-            from Module.controller import ensure_recipe_dataclass
-            result = ensure_recipe_dataclass(result)
-            print(f"[DEBUG] After ensure_recipe_dataclass: type={type(result)}, dir={dir(result)}, repr={repr(result)}")
-            if not hasattr(result, 'ingredients') or not isinstance(result.ingredients, (list, tuple)):
-                print(f"[ERROR] Synthesized recipe has no 'ingredients' attribute after ensure_recipe_dataclass. type={type(result)}, dir={dir(result)}, repr={repr(result)}")
-                return {
-                    "status": False,
-                    "error": {"code": 500, "message": "Sorry, there was a problem generating the recipe. Please try again or contact support."}
-                }
-            postgres_repo = PostgresRecipeRepository(db)
-            print(f"[DEBUG] PostgresRecipeRepository created: {postgres_repo}")
-            try:
-                ings = result.ingredients
-            except Exception as attr_e:
-                print(f"[ERROR] Exception accessing result.ingredients: {attr_e}")
-                print(f"[ERROR] result type: {type(result)}; dir: {dir(result)}; repr: {repr(result)}")
-                return {
-                    "status": False,
-                    "error": {"code": 500, "message": "Sorry, there was a problem accessing the recipe ingredients. Please try again or contact support."}
-                }
-            recipe_obj = postgres_repo.create_recipe(
-                title=result.title,
-                ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in ings],
-                steps=result.steps,
-                servings=result.servings,
-                submitted_by=user.user_id,
-                approved=getattr(result, 'approved', False)
-            )
-            print(f"[DEBUG] recipe_obj returned: {recipe_obj}")
-            print(f"[DEBUG] recipe_obj.id: {getattr(recipe_obj, 'id', None)}")
-            # Get version_id from the database
-            version_id = None
-            from Module.database import Recipe as DBRecipe
-            db_recipe = db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_obj.id).first()
-            if db_recipe and hasattr(db_recipe, 'current_version_id'):
-                version_id = db_recipe.current_version_id
-            response = RecipeResponse(
-                recipe_id=recipe_obj.id,
-                version_id=version_id,
-                title=recipe_obj.title,
-                servings=recipe_obj.servings,
-                approved=recipe_obj.approved,
-                popularity=getattr(recipe_obj, 'popularity', 0),
-                # avg_rating removed from response
-                ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
-                steps=getattr(recipe_obj, 'steps', [])
-            )
-            print(f"[DEBUG] RecipeResponse: {response}")
-            return response
-    except Exception as e:
-        print(f"[ERROR] synthesize_recipe exception: {e}")
-        return {
-            "status": False,
-            "error": {"code": 400, "message": "An unexpected error occurred while synthesizing the recipe. Please try again later."}
-        }
-
-
-@app.get("/recipes/pending")
-def get_pending_recipes(db: Session = Depends(get_db)):
-    """Get all pending (unapproved) recipes."""
-    postgres_repo = PostgresRecipeRepository(db)
-    recipes = postgres_repo.pending()
-    
-    return [
-        {
-            "id": r.id,
-            "title": r.title,
-            "servings": r.servings,
-            "submitted_by": r.metadata.get("submitted_by", "unknown")
-        }
-        for r in recipes
-    ]
-
-
-# ============================================================================
-# Recipe Validation (Approve/Reject) Endpoint (FIXED: validator_id as query param)
-# ============================================================================
-
-
-# ============================================================================
-# Get Single Recipe Endpoint
-# ============================================================================
-
-# AI Review endpoint: Review recipe by AI (OpenAI), auto-approve if accuracy > 90%, else reject, with feedback
-from pydantic import BaseModel
-
-class ValidationResponse(BaseModel):
-    validation_id: str
-    version_id: str
-    validated_at: str
-    approved: bool
-    feedback: str
-
-@app.post("/recipe/version/{version_id}/validate", response_model=ValidationResponse)
-def ai_review_recipe(version_id: str, db: Session = Depends(get_db)):
-    """Review a recipe version using OpenAI. Approve if accuracy > 90%, else reject, with feedback."""
-    # Find the recipe version
-    from Module.database import RecipeVersion, Validation
-    all_versions = db.query(RecipeVersion.version_id).all()
-    print(f"[DEBUG] All available version_ids: {[v[0] for v in all_versions]}")
-    version = db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
-    if not version:
-        print(f"[DEBUG] Provided version_id '{version_id}' not found in recipe_versions table.")
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "No recipe version found with the provided ID."}
-        }
-    # Find the parent recipe
-    recipe = version.recipe
-    if not recipe:
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "No parent recipe found for this version."}
-        }
-
-    # Use ai_validate_recipe utility (calls OpenAI)
-    approved, feedback, confidence = ai_validate_recipe(
-        recipe.dish_name,
-        [f"{ing.name} {ing.quantity} {ing.unit}" for ing in version.ingredients],
-        [step.instruction for step in version.steps]
-    )
-
-    # Save validation record (only required columns)
-    import uuid
-    from datetime import datetime
-    validation = Validation(
-        validation_id=str(uuid.uuid4()),
-        version_id=version_id,
-        validated_at=datetime.utcnow(),
-        approved=approved,
-        feedback=feedback
-    )
-    db.add(validation)
-    # Also update the Recipe's is_published field if approved
-    if approved:
-        recipe.is_published = True
-    db.commit()
-    db.refresh(validation)
-    db.refresh(version)
-    db.refresh(recipe)
-
-    # --- Update recipe_scores table ---
-    from Module.scoring import ScoringEngine
-    from Module.database import update_recipe_score
-    scorer = ScoringEngine()
-    # Build a mock recipe object for scoring
-    class MockRecipe:
-        def __init__(self, recipe, version):
-            self.recipe_id = recipe.recipe_id
-            self.dish_name = recipe.dish_name
-            self.servings = recipe.servings
-            self.popularity = getattr(recipe, 'popularity', 0)
-            self.validator_confidence = confidence
-            self.metadata = {'ai_confidence': confidence}
-            self.ingredients = version.ingredients
-            self.steps = version.steps
-        def avg_rating(self):
-            return 0.0
-    mock_recipe = MockRecipe(recipe, version)
-    ai_scores = {
-        'validator_confidence_score': scorer.score(mock_recipe),
-        'ingredient_authenticity_score': scorer.ingredient_authenticity_score(mock_recipe),
-        'serving_scalability_score': scorer.serving_scalability_score(mock_recipe),
-        'ai_confidence_score': scorer.ai_confidence_score(mock_recipe)
-    }
-    popularity_score = scorer.popularity_score(mock_recipe)
-    update_recipe_score(db, recipe.recipe_id, ai_scores=ai_scores, popularity=popularity_score)
-
-    return ValidationResponse(
-        validation_id=validation.validation_id,
-        version_id=validation.version_id,
-        validated_at=validation.validated_at.isoformat(),
-        approved=validation.approved,
-        feedback=validation.feedback
-    )
-
-
-@app.get("/recipe/version/{version_id}", response_model=RecipeResponse)
-def get_single_recipe_by_version(version_id: str, db: Session = Depends(get_db)):
-    print(f"[DEBUG] get_single_recipe_by_version called with version_id={version_id}")
-    from Module.database import RecipeVersion
-    version = db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
-    if not version:
-        print("[DEBUG] Recipe version not found")
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "No recipe version found with the provided ID."}
-        }
-    recipe = version.recipe
-    if not recipe:
-        print("[DEBUG] Parent recipe not found for version")
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "No parent recipe found for this version."}
-        }
-    # Determine approval status from latest Validation record
-    from Module.database import Validation
-    latest_validation = (
-        db.query(Validation)
-        .filter(Validation.version_id == version.version_id)
-        .order_by(Validation.validated_at.desc())
-        .first()
-    )
-    approved = latest_validation.approved if latest_validation and latest_validation.approved is not None else False
-    # Fetch scores from recipe_scores table if available
-    from Module.database import RecipeScore
-    score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe.recipe_id).first()
-    avg_rating = score.user_rating_score if score and score.user_rating_score is not None else 0.0
-    popularity = score.popularity_score if score and score.popularity_score is not None else getattr(recipe, "popularity", 0)
-    response = RecipeResponse(
-        recipe_id=recipe.recipe_id,
-        version_id=version.version_id,
-        title=recipe.dish_name,
-        servings=version.base_servings if hasattr(version, 'base_servings') and version.base_servings else getattr(recipe, 'servings', 1),
-        approved=approved,
-        popularity=popularity,
-        # avg_rating removed from response
-        ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(version, 'ingredients', [])],
-        steps=[step.instruction for step in sorted(getattr(version, 'steps', []), key=lambda x: x.step_order)]
-    )
-    print(f"[DEBUG] get_single_recipe_by_version response: {response}")
-    return response
-
-
-# ============================================================================
-# Rate Recipe Endpoint
-# ============================================================================
-
-from fastapi import Body
-
-@app.post("/recipe/version/{version_id}/rate")
-def rate_recipe(
-    version_id: str,
-    user_id: str = Query(...),
-    rating: float = Query(...),
-    comment: str = Body(default=None, embed=True),
-    db: Session = Depends(get_db)
-):
-    print(f"[DEBUG] rate_recipe called with version_id={version_id}, user_id={user_id}, rating={rating}, comment={comment}")
-    from Module.database import RecipeVersion
-    version = db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
-    if not version:
-        print("[DEBUG] Recipe version not found")
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "No recipe version found with the provided ID."}
-        }
-    recipe_id = version.recipe_id
-    from Module.repository_postgres import PostgresRecipeRepository
-    postgres_repo = PostgresRecipeRepository(db)
-    # Optionally, check user exists
-    user = db.query(User).filter(User.user_id == user_id).first()
-    if not user:
-        print("[DEBUG] User not found")
-        return {
-            "status": False,
-            "error": {"code": 404, "message": "No user found with the provided user ID. Please check and try again."}
-        }
-    # Add or update rating and comment
-    feedback = postgres_repo.add_rating(version_id, user_id, rating, comment)
-    print(f"[DEBUG] Rating and comment added/updated for version {version_id} by user {user_id}")
-    # Update recipe_scores
-    from Module.database import update_recipe_score, RecipeScore
-    update_recipe_score(db, recipe_id)
-    # Fetch updated scores
-    score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe_id).first()
-    avg_rating = score.user_rating_score if score and score.user_rating_score is not None else 0.0
-    return {
-        "recipe_id": recipe_id,
-        "version_id": version_id,
-        "title": version.recipe.dish_name if version.recipe else None,
-        "servings": version.base_servings if hasattr(version, 'base_servings') and version.base_servings else None,
-        "approved": version.recipe.is_published if version.recipe else None,
-        "avg_rating": round(avg_rating, 2),
-        "comment": feedback.comment
-    }
-
-# ============================================================================
 # Error Handlers
 # ============================================================================
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc: HTTPException):
+    """Handle HTTPException to return custom error format."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": False,
+            "message": exc.detail
+        }
+    )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
@@ -1502,11 +230,7 @@ async def general_exception_handler(request, exc):
         status_code=500,
         content={
             "status": False,
-            "error": {
-                "code": 500,
-                "msg": "Internal server error",
-                "detail": str(exc)
-            }
+            "message": "Internal server error"
         }
     )
 
@@ -1523,3 +247,5 @@ if __name__ == "__main__":
         port=8000,
         reload=True
     )
+
+app.include_router(api_router)
