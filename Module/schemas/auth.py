@@ -18,3 +18,8 @@ class OTPVerifyRequest(BaseModel):
 class RefreshRequest(BaseModel):
     """Schema for refresh token request."""
     refresh_token: str
+
+class ChangePasswordRequest(BaseModel):
+    """Schema for change password request."""
+    old_password: constr(min_length=8)
+    new_password: constr(min_length=8)

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from Module.database import get_db, User
 from Module.routers.base import api_router
+from Module.routers.auth import get_current_user
 from Module.schemas.recipe import (
     RecipeCreate, RecipeResponse, RecipeSynthesisRequest, ValidationResponse
 )
@@ -15,7 +16,8 @@ from Module.services.recipe_service import RecipeService
 def submit_recipe(
     recipe: RecipeCreate,
     trainer_id: str = Query(..., description="Trainer user ID (UUID)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     try:
         # Validate trainer_id format
@@ -84,8 +86,19 @@ def get_pending_recipes(db: Session = Depends(get_db)):
     return service.get_pending_recipes()
 
 @api_router.post("/recipe/version/{version_id}/validate")
-def ai_review_recipe(version_id: str, db: Session = Depends(get_db)):
+def ai_review_recipe(
+    version_id: str, 
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
     try:
+        # Admin-only authorization
+        if current_user.get("role") != "admin":
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied. Only administrators can validate recipes."
+            )
+        
         service = RecipeService(db)
         return service.validate_recipe(version_id)
     except ValueError as e:

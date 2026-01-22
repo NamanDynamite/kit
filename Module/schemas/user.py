@@ -76,24 +76,29 @@ class RegisterResponse(BaseModel):
     status: bool
 
 class UserUpdate(BaseModel):
-    """Schema for updating user information."""
-    name: Optional[str] = None
-    email: Optional[str] = None
-    login_identifier: Optional[str] = None
-    password_hash: Optional[str] = None
-    auth_type: Optional[str] = None
-    role_id: Optional[str] = None
-    dietary_preference: Optional[str] = None
-    rating_score: Optional[float] = None
-    credit: Optional[float] = None
-    last_login_at: Optional[str] = None
-    is_super_admin: Optional[bool] = None
-    created_by: Optional[str] = None
-    admin_action_type: Optional[str] = None
-    admin_action_target_type: Optional[str] = None
-    admin_action_target_id: Optional[str] = None
-    admin_action_description: Optional[str] = None
-    admin_action_created_at: Optional[str] = None
+    """Schema for updating user information. Only allows safe fields to be modified."""
+    name: Optional[constr(strip_whitespace=True, min_length=2, max_length=100)] = None
+    email: Optional[EmailStr] = None
+    dietary_preference: Optional[constr(strip_whitespace=True)] = None
+    
+    @validator('name')
+    def validate_name_format(cls, v):
+        if v is not None:
+            import re
+            # Allow letters, spaces, hyphens, apostrophes
+            if not re.match(r"^[A-Za-z\s'-]+$", v):
+                raise ValueError("Name can only contain letters, spaces, hyphens, and apostrophes.")
+        return v
+    
+    @validator('dietary_preference')
+    def validate_dietary_preference_enum(cls, v):
+        if v is not None:
+            allowed = {"VEG", "NON_VEG"}
+            v_upper = v.upper().strip()
+            if v_upper not in allowed:
+                raise ValueError(f"Dietary preference must be one of: {', '.join(allowed)}")
+            return v_upper
+        return v
 
 class UserResponse(BaseModel):
     """Schema for user response."""

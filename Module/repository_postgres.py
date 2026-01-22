@@ -73,11 +73,68 @@ class PostgresRecipeRepository:
     def create_recipe(self, title, ingredients, steps, servings, submitted_by=None, approved=False):
         """Create and persist a new recipe, returning the Recipe model with id. Prevent duplicate drafts."""
         print(f"[DEBUG] create_recipe called with title={title}, servings={servings}, submitted_by={submitted_by}, approved={approved}")
-        # If this is a draft (not approved/published), check for existing draft
+        # If this is a draft (not approved/published), check for existing draft and update it
         if not approved:
             existing_draft = self.find_draft(title, servings, submitted_by)
             if existing_draft:
-                print(f"[DEBUG] Existing draft found, returning it: id={getattr(existing_draft, 'id', None)}")
+                print(f"[DEBUG] Existing draft found, updating it: id={getattr(existing_draft, 'id', None)}")
+                db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == existing_draft.id).first()
+                if db_recipe:
+                    # Resolve current version (or fallback to latest)
+                    version = None
+                    if db_recipe.current_version_id:
+                        for v in db_recipe.versions:
+                            if v.version_id == db_recipe.current_version_id:
+                                version = v
+                                break
+                    if not version and db_recipe.versions:
+                        version = db_recipe.versions[-1]
+
+                    if version:
+                        # Clear existing ingredients and steps for this version
+                        self.db.query(DBIngredient).filter(DBIngredient.version_id == version.version_id).delete()
+                        self.db.query(DBStep).filter(DBStep.version_id == version.version_id).delete()
+
+                        # Normalize ingredient input
+                        from Module.models import Ingredient as IngredientModel
+                        safe_ingredients = []
+                        for ing in ingredients:
+                            if isinstance(ing, dict):
+                                safe_ingredients.append(IngredientModel(**ing))
+                            else:
+                                safe_ingredients.append(ing)
+
+                        version.ingredients = [
+                            DBIngredient(
+                                ingredient_id=str(uuid.uuid4()),
+                                version_id=version.version_id,
+                                name=ing.name,
+                                quantity=ing.quantity,
+                                unit=ing.unit
+                            ) for ing in safe_ingredients
+                        ]
+
+                        version.steps = []
+                        for idx, step_text in enumerate(steps):
+                            minutes = self.extract_minutes(step_text)
+                            version.steps.append(DBStep(
+                                step_id=str(uuid.uuid4()),
+                                version_id=version.version_id,
+                                step_order=idx,
+                                instruction=step_text,
+                                minutes=minutes
+                            ))
+
+                        version.base_servings = servings if servings is not None else db_recipe.servings
+                        db_recipe.servings = version.base_servings
+                        db_recipe.dish_name = title
+
+                        self.db.commit()
+                        self.db.refresh(db_recipe)
+                        print(f"[DEBUG] Draft updated and returned: id={getattr(db_recipe, 'recipe_id', None)}")
+                        return self._to_model(db_recipe)
+
+                print(f"[DEBUG] Existing draft could not be updated; returning original model")
                 return existing_draft
         import datetime
         recipe_id = str(uuid.uuid4())

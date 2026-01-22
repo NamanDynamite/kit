@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from Module.database import get_db
 from Module.routers.base import api_router
-from Module.schemas.auth import LoginRequest, OTPVerifyRequest, RefreshRequest
+from Module.schemas.auth import LoginRequest, OTPVerifyRequest, RefreshRequest, ChangePasswordRequest
 from Module.services.auth_service import AuthService
 
 security = HTTPBearer()
@@ -16,7 +16,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     except ValueError as e:
         raise HTTPException(status_code=401, detail=str(e))
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=401, detail="Your session has expired or the token is invalid. Please log in again to get a new access token.")
 
 @api_router.post("/login")
 def login_user(request: LoginRequest, db: Session = Depends(get_db)):
@@ -70,3 +70,25 @@ def protected_route(user=Depends(get_current_user)):
         "message": "You are authenticated",
         "data": {"user": user}
     }
+
+@api_router.post("/change-password")
+def change_password(
+    request: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        user_id = current_user.get("user_id")
+        service = AuthService(db)
+        result = service.change_password(user_id, request)
+        return {
+            "status": True,
+            "message": "Password changed successfully.",
+            "data": result
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

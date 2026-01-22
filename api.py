@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, APIRouter
+from fastapi import FastAPI, Depends, APIRouter, HTTPException
 from typing import List
 from pydantic import BaseModel, EmailStr, constr, validator
 from sqlalchemy.orm import Session
@@ -18,10 +18,72 @@ STATIC_OTP = "123456"
 from fastapi import status, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.security import HTTPBearer
+import json
+
+# Handle missing authentication header
+security = HTTPBearer(auto_error=False)
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle missing authentication headers gracefully."""
+    if "No authentication credentials provided" in str(exc) or isinstance(exc, Exception):
+        # Check if this is an auth-related endpoint that requires Bearer token
+        if "user/" in str(request.url) or "auth/" in str(request.url) or "recipe" in str(request.url):
+            if hasattr(exc, '__class__') and exc.__class__.__name__ == 'HTTPException':
+                raise exc
+    # Re-raise if not an auth error
+    raise exc
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Format HTTPException responses with consistent structure."""
+    # If it's a 401 with default message, provide better guidance
+    if exc.status_code == 401:
+        message = exc.detail
+        if message == "Not authenticated":
+            message = "Authentication required. Please provide a valid Bearer token in the Authorization header. Example: Authorization: Bearer YOUR_ACCESS_TOKEN"
+    else:
+        message = exc.detail
+    
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": False,
+            "message": message
+        }
+    )
+
+@app.exception_handler(json.JSONDecodeError)
+async def json_decode_exception_handler(request: Request, exc: json.JSONDecodeError):
+    """Handle malformed JSON in request body."""
+    print(f"[DEBUG] JSON decode error caught: {exc}")
+    print(f"[DEBUG] Request URL: {request.url}")
+    print(f"[DEBUG] Request method: {request.method}")
+    return JSONResponse(
+        status_code=400,
+        content={
+            "status": False,
+            "message": "Please ensure all fields are properly filled (e.g., numbers for quantity and servings, non-empty strings for text fields)."
+        }
+    )
 
 @app.exception_handler(RequestValidationError)
 async def custom_validation_exception_handler(request: Request, exc: RequestValidationError):
     errors = exc.errors()
+    print(f"[DEBUG] RequestValidationError caught")
+    print(f"[DEBUG] Errors: {errors}")
+    
+    # Priority 0: Check for JSON decode errors first
+    for err in errors:
+        if err.get("type") == "json_invalid":
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": False,
+                    "message": "Please ensure all fields are properly filled (e.g., numbers for quantity and servings, non-empty strings for text fields)."
+                }
+            )
     
     # Priority 1: Check query parameters (like trainer_id) first
     for err in errors:
@@ -74,6 +136,9 @@ async def custom_validation_exception_handler(request: Request, exc: RequestVali
         
         # Ingredient name/unit validation
         if field_name in ["name", "unit"] and "ingredients" in str(loc):
+            # Friendlier copy for short ingredient names
+            if field_name == "name" and ("at least 2" in msg or err_type == "string_too_short"):
+                return JSONResponse(status_code=422, content={"status": False, "message": "Ingredient name must be at least 2 characters long."})
             clean_msg = msg.replace("Value error, ", "").strip()
             return JSONResponse(status_code=422, content={"status": False, "message": clean_msg})
         

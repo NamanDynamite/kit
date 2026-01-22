@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from Module.database import User
 from Module.token_utils import create_access_token, create_refresh_token, decode_token
-from Module.schemas.auth import LoginRequest, OTPVerifyRequest, RefreshRequest
+from Module.schemas.auth import LoginRequest, OTPVerifyRequest, RefreshRequest, ChangePasswordRequest
 
 STATIC_OTP = "123456"
 
@@ -82,3 +82,39 @@ class AuthService:
     def validate_token(self, token: str) -> dict:
         """Validate and decode token."""
         return decode_token(token)
+    
+    def change_password(self, user_id: str, request: ChangePasswordRequest) -> dict:
+        """Change user password after verifying old password."""
+        db_user = self.db.query(User).filter(User.user_id == user_id).first()
+        
+        if not db_user:
+            raise ValueError("User not found")
+        
+        # Verify old password
+        old_password_hash = hashlib.sha256(request.old_password.encode()).hexdigest()
+        if db_user.password_hash != old_password_hash:
+            raise PermissionError("Current password is incorrect")
+        
+        # Validate new password format
+        import re
+        if len(request.new_password) < 8 or len(request.new_password) > 128:
+            raise ValueError("New password must be 8-128 characters, include uppercase, lowercase, digit, and special character.")
+        pattern = r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$'
+        if not re.match(pattern, request.new_password):
+            raise ValueError("New password must be 8-128 characters, include uppercase, lowercase, digit, and special character.")
+        
+        # Check if new password is same as old
+        if request.old_password == request.new_password:
+            raise ValueError("New password must be different from the current password")
+        
+        # Check common passwords
+        common_passwords = {"password", "123456", "12345678", "qwerty", "abc123", "111111", "123123", "letmein", "welcome", "admin", "iloveyou", "monkey", "login", "passw0rd", "starwars"}
+        if request.new_password.lower() in common_passwords:
+            raise ValueError("Password is too common. Please choose a stronger password.")
+        
+        # Update password
+        new_password_hash = hashlib.sha256(request.new_password.encode()).hexdigest()
+        db_user.password_hash = new_password_hash
+        self.db.commit()
+        
+        return {"message": "Password changed successfully"}
