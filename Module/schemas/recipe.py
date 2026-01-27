@@ -1,6 +1,15 @@
-from typing import List, Optional
+from typing import List, Optional, Generic, TypeVar, Any
 from pydantic import BaseModel, field_validator, Field
 import re
+from Module.utils_time import format_datetime_ampm as format_dt
+
+T = TypeVar('T')
+
+class ApiResponse(BaseModel, Generic[T]):
+    """Generic API response wrapper."""
+    status: bool = Field(..., description="Response status: True on success, False on error")
+    message: Optional[str] = Field(None, description="Optional message")
+    data: Optional[Any] = Field(None, description="Response data (only present on success)")
 
 class IngredientCreate(BaseModel):
     """Schema for creating an ingredient."""
@@ -57,7 +66,7 @@ class RecipeResponse(BaseModel):
     title: str
     servings: int
     approved: bool
-    popularity: int
+    views: int
     ingredients: list = []
     steps: list = []
 
@@ -97,8 +106,20 @@ class RecipeScoreResponse(BaseModel):
             popularity_score=round((db_score.popularity_score or 0), 2),
             ai_confidence_score=round((db_score.ai_confidence_score or 0), 2),
             final_score=round((db_score.final_score or 0), 2),
-            calculated_at=str(db_score.calculated_at) if db_score.calculated_at else None
+            calculated_at=format_dt(db_score.calculated_at) if db_score.calculated_at else None
         )
+
+class RatingResponse(BaseModel):
+    """Schema for recipe rating response."""
+    recipe_id: str
+    version_id: str
+    user_id: str
+    title: str
+    servings: int
+    rating: float = Field(..., description="Rating given by user on 0-5 scale")
+    avg_rating: float = Field(..., description="Average rating across all users on 0-5 scale")
+    comment: str
+    created_at: str
 
 class ValidationResponse(BaseModel):
     """Schema for recipe validation response."""

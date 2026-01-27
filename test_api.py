@@ -219,7 +219,7 @@ def test_create_admin_action(admin: Dict[str, Any]) -> Dict[str, Any]:
             "admin_action_target_type": "test_target_type",
             "admin_action_target_id": "test_target_id",
             "admin_action_description": "Manual adjustment for test",
-            "admin_action_created_at": datetime.utcnow().isoformat()
+            "admin_action_created_at": __import__('Module.utils_time', fromlist=['get_india_time']).get_india_time().isoformat()
         }
         response = requests.patch(f"{BASE_URL}/user/{user_id}", json=patch_data)
         if response.status_code in (200, 201, 200):

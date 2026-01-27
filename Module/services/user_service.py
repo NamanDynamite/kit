@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 from Module.database import User, DietaryPreferenceEnum
 from Module.schemas.user import RegisterRequest, UserUpdate, UserResponse, UserProfileResponse
+from Module.utils_time import format_datetime_ampm as format_dt, get_india_time
 
 class UserService:
     """Service for user-related business logic."""
@@ -30,8 +31,8 @@ class UserService:
             dietary_preference=None,
             rating_score=0.0,
             credit=0.0,
-            created_at=datetime.utcnow(),
-            last_login_at=datetime.utcnow()
+            created_at=get_india_time(),
+            last_login_at=get_india_time()
         )
         self.db.add(db_user)
         
@@ -91,8 +92,8 @@ class UserService:
             dietary_preference=user.dietary_preference.value if user.dietary_preference else None,
             rating_score=user.rating_score,
             credit=user.credit,
-            created_at=str(user.created_at) if user.created_at else None,
-            last_login_at=str(user.last_login_at) if user.last_login_at else None
+            created_at=format_dt(user.created_at) if user.created_at else None,
+            last_login_at=format_dt(user.last_login_at) if user.last_login_at else None
         )
     
     def get_user(self, user_id: str) -> UserResponse:
@@ -109,8 +110,8 @@ class UserService:
             dietary_preference=user.dietary_preference.value if hasattr(user.dietary_preference, 'value') else user.dietary_preference,
             rating_score=user.rating_score,
             credit=user.credit,
-            created_at=str(user.created_at) if user.created_at else None,
-            last_login_at=str(user.last_login_at) if user.last_login_at else None
+            created_at=format_dt(user.created_at) if user.created_at else None,
+            last_login_at=format_dt(user.last_login_at) if user.last_login_at else None
         )
     
     def get_user_by_email(self, email: str) -> UserResponse:
@@ -127,8 +128,8 @@ class UserService:
             dietary_preference=db_user.dietary_preference.value if db_user.dietary_preference else None,
             rating_score=db_user.rating_score,
             credit=db_user.credit,
-            created_at=str(db_user.created_at) if db_user.created_at else None,
-            last_login_at=str(db_user.last_login_at) if db_user.last_login_at else None
+            created_at=format_dt(db_user.created_at) if db_user.created_at else None,
+            last_login_at=format_dt(db_user.last_login_at) if db_user.last_login_at else None
         )
     
     def get_user_profile(self, user_id: str) -> UserProfileResponse:

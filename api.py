@@ -9,6 +9,7 @@ from Module.token_utils import create_access_token, create_refresh_token, decode
 
 # Import router modules so their endpoints register on the shared router
 from Module.routers import auth, users, roles, admin, recipes, events
+from Module.schemas.recipe import ApiResponse
 
 
 app = FastAPI()
@@ -171,6 +172,13 @@ async def custom_validation_exception_handler(request: Request, exc: RequestVali
             if ("Password must be 8-128 characters" in msg or "Password must be at least 8 characters" in msg or "Password must be a string." in msg or "Password is too common" in msg or "String should have at least" in msg):
                 return JSONResponse(status_code=422, content={"status": False, "message": "Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a digit, and a special character."})
         
+        # OTP errors
+        if field_name == "otp":
+            if ("at least 6" in msg or "string_too_short" in err_type or "String should have at least" in msg):
+                return JSONResponse(status_code=422, content={"status": False, "message": "OTP must be exactly 6 digits. Please check the code sent to your email."})
+            if ("string does not match regex" in msg or "string_pattern_mismatch" in err_type):
+                return JSONResponse(status_code=422, content={"status": False, "message": "OTP must contain only numbers (6 digits). Please check the code sent to your email."})
+        
         # Role errors
         if field_name == "role":
             if ("Role must be one of: user, trainer, admin." in msg):
@@ -247,15 +255,19 @@ def startup_event():
 # Health Check
 # ============================================================================
 
-@app.get("/")
+@app.get("/", response_model=ApiResponse)
 def read_root():
     """Health check endpoint."""
-    return {
-        "message": "KitchenMind API",
-        "version": "1.0.0",
-        "status": "online",
-        "docs": "/docs"
-    }
+    return ApiResponse(
+        status=True,
+        message="OK",
+        data={
+            "message": "KitchenMind API",
+            "version": "1.0.0",
+            "status": "online",
+            "docs": "/docs"
+        }
+    )
 
 
 @app.get("/health")

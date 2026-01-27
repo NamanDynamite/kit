@@ -4,8 +4,10 @@ PostgreSQL-based repository implementation for KitchenMind.
 from typing import List, Optional
 from sqlalchemy.orm import Session
 import uuid
+import datetime
 from .database import Recipe as DBRecipe, Ingredient as DBIngredient, Step as DBStep
 from Module.models import Recipe as RecipeModel, Ingredient
+from Module.utils_time import get_india_time
 
 
 class PostgresRecipeRepository:
@@ -49,14 +51,14 @@ class PostgresRecipeRepository:
             if comment is not None:
                 feedback.comment = comment
             feedback.is_revised = True
-            feedback.revised_at = datetime.utcnow()
+            feedback.revised_at = get_india_time()
             print(f"[DEBUG] add_rating: updated feedback_id={feedback.feedback_id} rating={rating} user_id={user_id} version_id={version_id}")
         else:
             feedback = Feedback(
                 feedback_id=str(uuid.uuid4()),
                 version_id=version_id,
                 user_id=user_id,
-                created_at=datetime.utcnow(),
+                created_at=get_india_time(),
                 rating=rating,
                 comment=comment
             )
@@ -144,7 +146,7 @@ class PostgresRecipeRepository:
             servings=servings if servings is not None else 1,
             created_by=submitted_by,
             is_published=approved,
-            created_at=datetime.datetime.utcnow()
+            created_at=get_india_time()
         )
         print(f"[DEBUG] db_recipe created: {db_recipe}")
         db_version = self._create_version(version_id, recipe_id, submitted_by, servings, ingredients, steps)
@@ -167,12 +169,11 @@ class PostgresRecipeRepository:
 
     def _create_version(self, version_id, recipe_id, submitted_by, servings, ingredients, steps):
         from .database import RecipeVersion, Ingredient as DBIngredient, Step as DBStep
-        import datetime
         db_version = RecipeVersion(
             version_id=version_id,
             recipe_id=recipe_id,
             submitted_by=submitted_by,
-            submitted_at=datetime.datetime.utcnow(),
+            submitted_at=get_india_time(),
             status="submitted",
             ai_confidence_score=0.0,
             base_servings=servings,
@@ -260,7 +261,7 @@ class PostgresRecipeRepository:
             servings=recipe.servings if recipe.servings is not None else 1,
             created_by=created_by,
             is_published=recipe.approved,
-            created_at=datetime.datetime.utcnow()
+            created_at=get_india_time()
         )
         db_version = self._create_version(
             version_id=version_id,
@@ -352,12 +353,11 @@ class PostgresRecipeRepository:
                         if feedback:
                             feedback.rating = rating_value
                         else:
-                            from datetime import datetime
                             feedback = Feedback(
                                 feedback_id=str(uuid.uuid4()),
                                 version_id=latest_version.version_id,
                                 user_id=user_id,
-                                created_at=datetime.utcnow(),
+                                created_at=get_india_time(),
                                 rating=rating_value,
                                 comment=None
                             )

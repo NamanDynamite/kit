@@ -2,8 +2,10 @@ import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
+from zoneinfo import ZoneInfo
 
 from Module.database import User
+from Module.utils_time import get_india_time
 from Module.token_utils import (
     create_access_token,
     create_refresh_token,
@@ -32,7 +34,7 @@ class AuthService:
             raise PermissionError("Invalid email or password")
         
         db_user.otp_hash = hashlib.sha256(STATIC_OTP.encode()).hexdigest()
-        db_user.otp_expires_at = datetime.utcnow() + timedelta(days=60)
+        db_user.otp_expires_at = get_india_time() + timedelta(days=60)
         db_user.otp_verified = False
         self.db.commit()
         
@@ -50,7 +52,7 @@ class AuthService:
         if db_user.otp_hash != otp_hash:
             raise PermissionError("Invalid OTP. Please check and try again.")
         
-        if db_user.otp_expires_at and db_user.otp_expires_at < datetime.now(timezone.utc):
+        if db_user.otp_expires_at and db_user.otp_expires_at < get_india_time():
             raise PermissionError("OTP expired.")
         
         db_user.otp_verified = True
@@ -65,7 +67,7 @@ class AuthService:
 
         # Record session aligned to refresh token lifetime
         from Module.database import Session as DBSession
-        refresh_expires_at = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+        refresh_expires_at = get_india_time() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
         ip_address = None
         user_agent = None
@@ -78,7 +80,7 @@ class AuthService:
         db_session = DBSession(
             session_id=str(uuid.uuid4()),
             user_id=db_user.user_id,
-            created_at=datetime.now(timezone.utc),
+            created_at=get_india_time(),
             expires_at=refresh_expires_at,
             is_active=True,
             ip_address=ip_address,

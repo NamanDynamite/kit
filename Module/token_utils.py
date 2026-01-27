@@ -2,6 +2,7 @@ import jwt
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
+from zoneinfo import ZoneInfo
 
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-fallback-key")
 ALGORITHM = "HS256"
@@ -10,10 +11,9 @@ REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 def format_expiration_time(unix_timestamp) -> str:
     """Convert Unix timestamp to human-readable format in IST."""
-    from datetime import timezone as tz_module, timedelta
-    ist = tz_module(timedelta(hours=5, minutes=30))
+    ist = ZoneInfo("Asia/Kolkata")
     dt = datetime.fromtimestamp(unix_timestamp, tz=ist)
-    return dt.strftime('%Y-%m-%d %H:%M:%S IST')
+    return dt.strftime('%d-%b-%Y %I:%M %p IST')
 
 def create_access_token(data: dict, expires_delta: timedelta = None) -> Dict[str, Any]:
     to_encode = data.copy()

@@ -10,7 +10,7 @@ def update_recipe_score(db, recipe_id, ai_scores=None, popularity=None, version_
     version_id: optional, when provided the score is computed for that version
     """
     from sqlalchemy import func
-    from datetime import datetime
+    from Module.utils_time import get_india_time
     
     # 1. Choose target version: explicit version_id (if provided) else latest
     if version_id:
@@ -39,15 +39,19 @@ def update_recipe_score(db, recipe_id, ai_scores=None, popularity=None, version_
         avg_rating = 0.0
     print(f"[DEBUG] update_recipe_score: feedback_avg={feedback_avg} avg_rating={avg_rating}")
 
-    # 3. Get or create RecipeScore (version_id is immutable - set only once)
-    score = db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe_id).first()
+    # 3. Get or create RecipeScore (one per recipe_version pair - immutable)
+    score = db.query(RecipeScore).filter(
+        RecipeScore.recipe_id == recipe_id,
+        RecipeScore.version_id == target_version_id
+    ).first()
     if not score:
         import uuid
         score = RecipeScore(score_id=str(uuid.uuid4()), recipe_id=recipe_id, version_id=target_version_id)
         db.add(score)
         db.flush()  # Ensure score exists in session before calculating final_score
-        print(f"[DEBUG] update_recipe_score: created new RecipeScore score_id={score.score_id}")
-    # Note: score.version_id is never updated after creation (immutable)
+        print(f"[DEBUG] update_recipe_score: created new RecipeScore score_id={score.score_id} for version_id={target_version_id}")
+    else:
+        print(f"[DEBUG] update_recipe_score: updating existing RecipeScore score_id={score.score_id} for version_id={target_version_id}")
 
     # 4. Set scores (all on 0-5 scale)
     score.rating = avg_rating  # avg_rating calculated from latest version feedback
@@ -55,10 +59,9 @@ def update_recipe_score(db, recipe_id, ai_scores=None, popularity=None, version_
         score.ingredient_authenticity_score = ai_scores.get('ingredient_authenticity_score', 0)
         score.serving_scalability_score = ai_scores.get('serving_scalability_score', 0)
         score.ai_confidence_score = ai_scores.get('ai_confidence_score', 0)
+    # Only update popularity_score when explicitly provided; otherwise preserve existing
     if popularity is not None:
         score.popularity_score = popularity
-    else:
-        score.popularity_score = 0
     print(f"[DEBUG] update_recipe_score: score.rating={score.rating} ia={score.ingredient_authenticity_score} ss={score.serving_scalability_score} pop={score.popularity_score} ai_conf={score.ai_confidence_score}")
 
     # 5. Calculate final_score (all scores now on 0-5 scale)
@@ -77,15 +80,58 @@ def update_recipe_score(db, recipe_id, ai_scores=None, popularity=None, version_
         (score.ai_confidence_score or 0) * weights['ai_confidence_score']
     )
     score.final_score = final
-    score.calculated_at = datetime.utcnow()
+    score.calculated_at = get_india_time()
     print(f"[DEBUG] update_recipe_score: final_score={score.final_score} calculated_at={score.calculated_at}")
     db.commit()
     db.refresh(score)
     print(f"[DEBUG] update_recipe_score: refreshed score.rating={score.rating} final_score={score.final_score}")
     
-    # Note: Each RecipeVersion maintains its own ai_confidence_score set during validation
-    # RecipeScore.version_id always points to the latest version for accurate, fair ratings
+    # Note: Each (recipe_id, version_id) pair has its own RecipeScore row (immutable).
+    # This preserves version history and prevents retroactive score changes.
     return score
+
+def update_trainer_rating_score(db, trainer_id):
+    """
+    Calculate and update the trainer's rating_score based on average rating 
+    from all feedback received on their recipes (across all versions).
+    
+    trainer_id: The user_id of the trainer whose rating should be updated
+    """
+    from sqlalchemy import func
+    
+    # Calculate average rating from all feedback on recipes created by this trainer
+    # Join: User (trainer) -> Recipe -> RecipeVersion -> Feedback
+    avg_rating = db.query(func.avg(Feedback.rating)).join(
+        RecipeVersion, Feedback.version_id == RecipeVersion.version_id
+    ).join(
+        Recipe, RecipeVersion.recipe_id == Recipe.recipe_id
+    ).filter(
+        Recipe.created_by == trainer_id
+    ).scalar()
+    
+    # Get the trainer user object
+    trainer = db.query(User).filter(User.user_id == trainer_id).first()
+    if not trainer:
+        raise ValueError(f"No user found with user_id={trainer_id}")
+    
+    # Update rating_score (convert to float, handle None case)
+    if avg_rating is not None:
+        try:
+            trainer.rating_score = float(avg_rating)
+            # Ensure rating_score is within 0-5 range
+            trainer.rating_score = max(0, min(5, trainer.rating_score))
+        except Exception:
+            trainer.rating_score = 0.0
+    else:
+        # No feedback yet, set to 0
+        trainer.rating_score = 0.0
+    
+    print(f"[DEBUG] update_trainer_rating_score: trainer_id={trainer_id} avg_rating={avg_rating} rating_score={trainer.rating_score}")
+    db.commit()
+    db.refresh(trainer)
+    
+    return trainer.rating_score
+
 """
 SQLAlchemy database setup and ORM models for KitchenMind.
 """
@@ -212,6 +258,7 @@ class RecipeVersion(Base):
     status = Column(String)
     ai_confidence_score = Column(Float)
     base_servings = Column(Integer)
+    views = Column(Integer, default=0)  # Track views per version
     recipe = relationship("Recipe", foreign_keys="RecipeVersion.recipe_id", back_populates="versions")
     ingredients = relationship("Ingredient", back_populates="version")
     steps = relationship("Step", back_populates="version")

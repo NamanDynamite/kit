@@ -7,6 +7,7 @@ from pydantic import parse_obj_as
 
 from Module.database import Recipe as DBRecipe, RecipeVersion, Validation, RecipeScore, User
 from Module.repository_postgres import PostgresRecipeRepository
+from Module.utils_time import format_datetime_ampm as format_dt, get_india_time
 from Module.schemas.recipe import (
     RecipeCreate, RecipeResponse, RecipeSynthesisRequest, 
     ValidationResponse, IngredientCreate, RecipeScoreResponse
@@ -100,13 +101,19 @@ class RecipeService:
                 import traceback
                 traceback.print_exc()
         
+        # Get views from the created version
+        views = 0
+        if version_id:
+            version = self.db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
+            views = version.views if version and version.views is not None else 0
+        
         return RecipeResponse(
             recipe_id=recipe_obj.id,
             version_id=version_id,
             title=recipe_obj.title,
             servings=recipe.servings,
             approved=approved_status,
-            popularity=getattr(recipe_obj, 'popularity', 0),
+            views=views,
             ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in recipe.ingredients],
             steps=recipe.steps
         )
@@ -121,16 +128,19 @@ class RecipeService:
         response = []
         for r in recipes:
             version_id = None
+            views = 0
             db_recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == r.id).first()
             if db_recipe and db_recipe.versions:
-                version_id = db_recipe.versions[-1].version_id
+                latest_version = db_recipe.versions[-1]
+                version_id = latest_version.version_id
+                views = latest_version.views if latest_version.views is not None else 0
             response.append(RecipeResponse(
                 recipe_id=r.id,
                 version_id=version_id,
                 title=r.title,
                 servings=r.servings,
                 approved=r.approved,
-                popularity=getattr(r, "popularity", 0),
+                views=views,
                 ingredients=[i for i in getattr(r, 'ingredients', [])],
                 steps=[s for s in getattr(r, 'steps', [])]
             ))
@@ -229,6 +239,7 @@ class RecipeService:
                 # Return existing version (deduplication - same dish, same servings)
                 ingredients = [{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in existing_version.ingredients]
                 steps = [step.instruction for step in sorted(existing_version.steps, key=lambda x: x.step_order)]
+                views = existing_version.views if existing_version.views is not None else 0
                 
                 return RecipeResponse(
                     recipe_id=existing_recipe.recipe_id,
@@ -236,7 +247,7 @@ class RecipeService:
                     title=existing_recipe.dish_name,
                     servings=existing_version.base_servings,
                     approved=existing_recipe.is_published,
-                    popularity=getattr(existing_recipe, 'popularity', 0),
+                    views=views,
                     ingredients=ingredients,
                     steps=steps
                 )
@@ -288,13 +299,18 @@ class RecipeService:
                 version_id = db_recipe.versions[-1].version_id
             print(f"[DEBUG] New recipe_id: {recipe_obj.id}, version_id: {version_id}")
         
+        views = 0
+        if version_id:
+            version = self.db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
+            views = version.views if version and version.views is not None else 0
+        
         return RecipeResponse(
             recipe_id=recipe_obj.id,
             version_id=version_id,
             title=recipe_obj.title,
             servings=recipe_obj.servings,
             approved=recipe_obj.approved,
-            popularity=getattr(recipe_obj, 'popularity', 0),
+            views=views,
             ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(recipe_obj, 'ingredients', [])],
             steps=getattr(recipe_obj, 'steps', [])
         )
@@ -337,7 +353,7 @@ class RecipeService:
         validation = Validation(
             validation_id=str(uuid.uuid4()),
             version_id=version_id,
-            validated_at=datetime.utcnow(),
+            validated_at=get_india_time(),
             approved=approved,
             feedback=feedback
         )
@@ -364,7 +380,8 @@ class RecipeService:
                 self.recipe_id = recipe.recipe_id
                 self.dish_name = recipe.dish_name
                 self.servings = recipe.servings
-                self.popularity = getattr(recipe, 'popularity', 0)
+                # Use version-level views for popularity
+                self.popularity = getattr(version, 'views', 0)
                 self.validator_confidence = confidence
                 self.metadata = {'ai_confidence': confidence}
                 self.ingredients = version.ingredients
@@ -379,12 +396,13 @@ class RecipeService:
             'ai_confidence_score': confidence * 5.0  # Convert 0-1 to 0-5 scale
         }
         popularity_score = scorer.popularity_score(mock_recipe)
-        update_recipe_score(self.db, recipe.recipe_id, ai_scores=ai_scores, popularity=popularity_score)
+        # Update score for this specific version
+        update_recipe_score(self.db, recipe.recipe_id, ai_scores=ai_scores, popularity=popularity_score, version_id=version_id)
         
         return ValidationResponse(
             validation_id=validation.validation_id,
             version_id=validation.version_id,
-            validated_at=validation.validated_at.isoformat(),
+            validated_at=format_dt(validation.validated_at),
             approved=validation.approved,
             feedback=validation.feedback
         )
@@ -407,8 +425,8 @@ class RecipeService:
         )
         approved = latest_validation.approved if latest_validation and latest_validation.approved is not None else False
         
-        score = self.db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe.recipe_id).first()
-        popularity = score.popularity_score if score and score.popularity_score is not None else getattr(recipe, "popularity", 0)
+        # Use version.views (integer count) not score.popularity_score (float 0-5)
+        views = version.views if version.views is not None else 0
         
         return RecipeResponse(
             recipe_id=recipe.recipe_id,
@@ -416,38 +434,88 @@ class RecipeService:
             title=recipe.dish_name,
             servings=version.base_servings if hasattr(version, 'base_servings') and version.base_servings else getattr(recipe, 'servings', 1),
             approved=approved,
-            popularity=popularity,
+            views=views,
             ingredients=[{"name": ing.name, "quantity": ing.quantity, "unit": ing.unit} for ing in getattr(version, 'ingredients', [])],
             steps=[step.instruction for step in sorted(getattr(version, 'steps', []), key=lambda x: x.step_order)]
         )
     
     def rate_recipe(self, version_id: str, user_id: str, rating: float, comment: str = None) -> dict:
-        """Rate a recipe version."""
+        """Rate a recipe version. Prevent trainers from rating their own recipes."""
         version = self.db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
         if not version:
             raise ValueError("No recipe version found with the provided ID")
-        
+
         recipe_id = version.recipe_id
-        
+
         user = self.db.query(User).filter(User.user_id == user_id).first()
         if not user:
             raise ValueError("No user found with the provided user ID")
-        
+
+        # Prevent trainers from rating their own recipes
+        recipe = self.db.query(DBRecipe).filter(DBRecipe.recipe_id == recipe_id).first()
+        if recipe and recipe.created_by == user_id:
+            raise PermissionError("You cannot rate your own recipe.")
+
         feedback = self.repo.add_rating(version_id, user_id, rating, comment)
-        
-        from Module.database import update_recipe_score
+
+        from Module.database import update_recipe_score, update_trainer_rating_score
         update_recipe_score(self.db, recipe_id, version_id=version_id)
-        
-        score = self.db.query(RecipeScore).filter(RecipeScore.recipe_id == recipe_id).first()
+
+        # After updating recipe score, also update the trainer's rating_score
+        # Find the creator of the recipe
+        trainer_id = None
+        if recipe:
+            trainer_id = recipe.created_by
+        if trainer_id:
+            try:
+                update_trainer_rating_score(self.db, trainer_id)
+            except Exception as e:
+                print(f"[WARN] Could not update trainer rating_score: {e}")
+
+        score = self.db.query(RecipeScore).filter(
+            RecipeScore.recipe_id == recipe_id,
+            RecipeScore.version_id == version_id
+        ).first()
         # Both feedback and rating are on 0-5 scale
         avg_rating = (score.rating or 0.0) if score else 0.0
-        
+
         return {
             "recipe_id": recipe_id,
             "version_id": version_id,
+            "user_id": user_id,
             "title": version.recipe.dish_name if version.recipe else None,
             "servings": version.base_servings if hasattr(version, 'base_servings') and version.base_servings else None,
-            "approved": version.recipe.is_published if version.recipe else None,
+            "rating": round(rating, 2),
             "avg_rating": round(avg_rating, 2),
-            "comment": feedback.comment
+            "comment": feedback.comment or "",
+            "created_at": format_dt(feedback.created_at) if feedback.created_at else None
         }
+    def increment_views(self, version_id: str) -> int:
+        """Increment recipe version views by 1 and recalculate score."""
+        version = self.db.query(RecipeVersion).filter(RecipeVersion.version_id == version_id).first()
+        if not version:
+            raise ValueError(f"Recipe version with ID {version_id} not found")
+        
+        version.views = (version.views or 0) + 1
+        self.db.commit()
+        
+        # Recalculate popularity score for this version
+        from Module.database import update_recipe_score
+        
+        # Calculate new popularity_score based on updated views count
+        from Module.scoring import ScoringEngine
+        scorer = ScoringEngine()
+        from Module.models import Recipe as RecipeModel
+        mock_recipe = RecipeModel(
+            id=version.recipe_id,
+            title=version.recipe.dish_name,
+            ingredients=[],
+            steps=[],
+            servings=version.base_servings,
+            popularity=version.views
+        )
+        popularity_score = scorer.popularity_score(mock_recipe)
+        # Ensure correct parameter mapping using keywords
+        update_recipe_score(self.db, version.recipe_id, popularity=popularity_score, version_id=version_id)
+        
+        return version.views

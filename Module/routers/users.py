@@ -5,18 +5,15 @@ from Module.database import get_db
 from Module.routers.base import api_router
 from Module.routers.auth import get_current_user
 from Module.schemas.user import RegisterRequest, UserUpdate, UserResponse
+from Module.schemas.recipe import ApiResponse
 from Module.services.user_service import UserService
 
-@api_router.post("/register", status_code=status.HTTP_201_CREATED)
+@api_router.post("/register", status_code=status.HTTP_201_CREATED, response_model=ApiResponse)
 def register_user(request: RegisterRequest, db: Session = Depends(get_db)):
     try:
         service = UserService(db)
         result = service.register_user(request)
-        return {
-            "status": True,
-            "message": "Registration complete. User created.",
-            "data": result
-        }
+        return ApiResponse(status=True, message="Registration complete. User created.", data=result)
     except ValueError as e:
         if "already exists" in str(e):
             raise HTTPException(status_code=409, detail=str(e))
@@ -24,7 +21,7 @@ def register_user(request: RegisterRequest, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.patch("/user/{user_id}")
+@api_router.patch("/user/{user_id}", response_model=ApiResponse)
 def update_user(
     user_id: str, 
     user_update: UserUpdate, 
@@ -106,11 +103,7 @@ def update_user(
         # FOURTH: Update user
         service = UserService(db)
         result = service.update_user(user_id, user_update)
-        return {
-            "status": True,
-            "message": "User updated successfully.",
-            "data": result
-        }
+        return ApiResponse(status=True, message="User updated successfully.", data=result)
     except HTTPException:
         raise
     except ValueError as e:
@@ -120,7 +113,7 @@ def update_user(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/user/{user_id}")
+@api_router.get("/user/{user_id}", response_model=ApiResponse)
 def get_user(
     user_id: str, 
     db: Session = Depends(get_db),
@@ -149,11 +142,7 @@ def get_user(
         
         service = UserService(db)
         result = service.get_user_profile(user_id)
-        return {
-            "status": True,
-            "message": "User fetched successfully.",
-            "data": result
-        }
+        return ApiResponse(status=True, message="User fetched successfully.", data=result)
     except HTTPException:
         raise
     except ValueError as e:
@@ -161,16 +150,12 @@ def get_user(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/user/email/{email}")
+@api_router.get("/user/email/{email}", response_model=ApiResponse)
 def get_user_by_email(email: str, db: Session = Depends(get_db)):
     try:
         service = UserService(db)
         result = service.get_user_by_email(email)
-        return {
-            "status": True,
-            "message": "User fetched successfully.",
-            "data": result
-        }
+        return ApiResponse(status=True, message="User fetched successfully.", data=result)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

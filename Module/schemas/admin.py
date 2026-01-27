@@ -5,7 +5,7 @@ import re
 class AdminProfileCreate(BaseModel):
     """Schema for creating admin profile."""
     name: str
-    email: str
+    email: str = "user@example.com"
 
     @field_validator('name')
     @classmethod

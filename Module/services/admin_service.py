@@ -3,9 +3,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import exists
 from sqlalchemy.orm import Session
 from fastapi import Request
+from zoneinfo import ZoneInfo
 
 from Module.database import User
 from Module.schemas.admin import AdminProfileCreate, AdminProfileResponse, SessionCreate, SessionResponse
+from Module.utils_time import format_datetime_ampm as format_dt, get_india_time
 
 class AdminService:
     """Service for admin-related business logic."""
@@ -20,7 +22,7 @@ class AdminService:
             raise ValueError("Admin with this email already exists")
         
         admin_id = str(uuid.uuid4())
-        created_at = datetime.utcnow()
+        created_at = get_india_time()
         db_admin = User(
             user_id=admin_id,
             name=profile.name,
@@ -43,7 +45,7 @@ class AdminService:
             admin_id=db_admin.user_id,
             name=db_admin.name,
             email=db_admin.email,
-            created_at=str(db_admin.created_at)
+            created_at=format_dt(db_admin.created_at) if db_admin.created_at else None
         )
     
     def get_admin_profile(self, admin_id: str) -> AdminProfileResponse:
@@ -56,7 +58,7 @@ class AdminService:
             admin_id=admin.user_id,
             name=admin.name,
             email=admin.email,
-            created_at=str(admin.created_at)
+            created_at=format_dt(admin.created_at) if admin.created_at else None
         )
     
     def create_session(self, session: SessionCreate, request: Request = None) -> SessionResponse:
@@ -73,19 +75,19 @@ class AdminService:
         existing_session = self.db.query(DBSession).filter(
             DBSession.user_id == session.user_id,
             DBSession.is_active == True,
-            DBSession.expires_at > datetime.now(timezone.utc)
+            DBSession.expires_at > get_india_time()
         ).first()
         
         if existing_session:
             return SessionResponse(
                 session_id=existing_session.session_id,
                 user_id=existing_session.user_id,
-                created_at=str(existing_session.created_at)
+                created_at=format_dt(existing_session.created_at) if existing_session.created_at else None
             )
         
         # Create new session only if none exists
-        # Use timezone-aware UTC to align with DB DateTime(timezone=True)
-        now = datetime.now(timezone.utc)
+        # Use timezone-aware IST to align with DB DateTime(timezone=True)
+        now = get_india_time()
         user_agent = None
         ip_address = None
         
@@ -112,5 +114,5 @@ class AdminService:
         return SessionResponse(
             session_id=db_session.session_id,
             user_id=db_session.user_id,
-            created_at=str(db_session.created_at)
+            created_at=format_dt(db_session.created_at) if db_session.created_at else None
         )
